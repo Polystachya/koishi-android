@@ -1,23 +1,19 @@
 {
     inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     inputs.flake-utils.url = "github:numtide/flake-utils";
-    inputs.anillc.url = "github:Anillc/flakes";
     inputs.nix-on-droid = {
-        url = "github:Anillc/nix-on-droid";
+        url = "github:t184256/nix-on-droid";
         inputs.nixpkgs.follows = "nixpkgs";
     };
-    outputs = inputs@{ self, nixpkgs, flake-utils, anillc, nix-on-droid }:
+    outputs = inputs@{ self, nixpkgs, flake-utils, nix-on-droid }:
         with flake-utils.lib;
     eachDefaultSystem (system: let
         pkgs = import nixpkgs {
             inherit system;
             overlays = [
-                (oself: osuper: self.packages.${system}
-                    // anillc.packages.${system}
-                    // nix-on-droid.packages.${system}
-                    // {
-                        inherit inputs;
-                    })
+                (oself: osuper: {
+                    inherit inputs;
+                } // (nix-on-droid.packages.${system} or {}))
             ];
         };
         aarch64-pkgs = import nixpkgs {
