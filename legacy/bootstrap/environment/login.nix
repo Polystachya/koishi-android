@@ -13,13 +13,14 @@ in writeScriptBin "login" ''
         echo "nameserver $KOISHI_DNS" > /etc/resolv.conf
     fi
     if [ -n "$KOISHI_TIMEZONE" ] && [ -e /etc/zoneinfo ]; then
-        /bin/ln -sf /etc/zoneinfo/$KOISHI_TIMEZONE /etc/localtiome
+        /bin/ln -sf /etc/zoneinfo/$KOISHI_TIMEZONE /etc/localtime
     fi
 
     for var in $(/bin/env | /bin/cut -d '=' -f 1); do unset $var; done
 
     export PATH=/bin
     export HOME=/home
+    export NODE_OPTIONS="--max-old-space-size=2048"
 
     cd $HOME
     exec sh "$@"
