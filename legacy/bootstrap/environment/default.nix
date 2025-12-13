@@ -1,8 +1,6 @@
 { pkgs, buildEnv, callPackage, lib, inputs, full ? false }:
-
 with builtins;
 with lib;
-
 let
     aarch64-pkgs = import inputs.nixpkgs { system = "aarch64-linux"; };
     login = callPackage ./login.nix {};
