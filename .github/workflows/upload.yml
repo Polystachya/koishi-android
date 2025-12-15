@@ -1,3 +1,7 @@
+permissions:
+  contents: write
+  releases: write
+
 on:
   release:
     types:
@@ -18,17 +22,14 @@ jobs:
       - name: Set up variables
         id: vars
         run: |
-          RELEASE=$(curl \
-            -H 'Accept: application/vnd.github.v3+json' \
-            -H 'Authorization: token ${{ github.token }}' \
-            https://api.github.com/repos/${{ github.repository }}/releases/latest)
-          TAG=$(echo "$RELEASE" | jq -r '.tag_name')
-          UPLOAD_URL=$(echo "$RELEASE" | jq -r '.upload_url' | cut -d'{' -f1)
-          echo ::set-output name=TAG::$TAG
-          echo ::set-output name=UPLOAD_URL::$UPLOAD_URL
+          # Use event payload instead of querying /releases/latest to avoid race conditions
+          TAG="${{ github.event.release.tag_name }}"
+          UPLOAD_URL="${{ github.event.release.upload_url }}"
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
 
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install nix
         uses: cachix/install-nix-action@v20
@@ -39,15 +40,15 @@ jobs:
           name: koishi
           authToken: ${{ secrets.CACHIX_TOKEN }}
 
-      - uses: actions/setup-java@v3
+      - uses: actions/setup-java@v4
         with:
-          distribution: adopt
+          distribution: temurin
           java-version: '11'
           cache: gradle
 
       - name: Build
         run: |
-          TAG=${{ steps.vars.outputs.TAG }}
+          TAG="${{ steps.vars.outputs.TAG }}"
           # TODO: increase version code (base version)
           export VERSION_CODE=$(echo "${TAG:1}" | sed 's/\.//g')
           export VERSION_NAME=$TAG
@@ -65,9 +66,13 @@ jobs:
 
       - name: Upload
         run: |
+          # URL encode the filename to handle special characters
+          FILENAME="${{ matrix.build.name }}-${{ steps.vars.outputs.TAG }}.apk"
+          ENCODED_NAME=$(printf "%s" "$FILENAME" | jq -sRr @uri)
+          
           curl -X POST \
             -H 'Accept: application/vnd.github.v3+json' \
-            -H 'Content-Type: octet-stream' \
+            -H 'Content-Type: application/octet-stream' \
             -H 'Authorization: token ${{ github.token }}' \
             --data-binary @${{steps.sign_app.outputs.signedFile}} \
-            "${{ steps.vars.outputs.UPLOAD_URL }}?name=${{ matrix.build.name }}-${{ steps.vars.outputs.TAG }}.apk"
+            "${{ steps.vars.outputs.UPLOAD_URL }}?name=${ENCODED_NAME}"
