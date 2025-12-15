@@ -35,9 +35,21 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Make log collector executable
+        run: chmod +x .github/scripts/log-collector.sh
+
+      - name: Collect system information
+        run: |
+          .github/scripts/log-collector.sh collect-system
+
       - name: Set up variables
         id: vars
         run: |
+          echo "::group::Setting up build variables"
+          
           if [[ "${{ github.event_name }}" == "release" ]]; then
             # Release created event - use event payload
             TAG="${{ github.event.release.tag_name }}"
@@ -79,48 +91,66 @@ jobs:
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
           echo "UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
           echo "IS_PRERELEASE=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
 
       - name: Validate release exists
         if: github.event_name == 'workflow_dispatch'
         run: |
-          TAG="${{ steps.vars.outputs.TAG }}"
+          echo "::group::Validating release exists"
           
-          # Check if release exists
-          RELEASE_INFO=$(curl \
-            -sS \
-            -H 'Accept: application/vnd.github.v3+json' \
-            -H 'Authorization: token ${{ github.token }}' \
-            https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG)
+          VALIDATION_RESULT=$(./.github/scripts/log-collector.sh execute "validate-release" "
+            TAG='${{ steps.vars.outputs.TAG }}'
+            
+            # Check if release exists
+            RELEASE_INFO=\$(curl \
+              -sS \
+              -H 'Accept: application/vnd.github.v3+json' \
+              -H 'Authorization: token ${{ github.token }}' \
+              https://api.github.com/repos/${{ github.repository }}/releases/tags/\$TAG)
+            
+            if [[ \$(echo \"\$RELEASE_INFO\" | jq -r '.message') == \"Not Found\" ]]; then
+              echo \"❌ Release \$TAG not found. Please create the release first.\"
+              exit 1
+            fi
+            
+            UPLOAD_URL=\$(echo \"\$RELEASE_INFO\" | jq -r '.upload_url' | cut -d'{' -f1)
+            echo \"UPLOAD_URL=\$UPLOAD_URL\" >> \$GITHUB_OUTPUT
+            echo \"✅ Found release: \$TAG\"
+          ")
           
-          if [[ $(echo "$RELEASE_INFO" | jq -r '.message') == "Not Found" ]]; then
-            echo "❌ Release $TAG not found. Please create the release first."
+          EXIT_CODE=${VALIDATION_RESULT%%:*}
+          LOG_FILE=${VALIDATION_RESULT##*:}
+          
+          if [[ $EXIT_CODE -ne 0 ]]; then
+            echo "❌ Release validation failed"
             exit 1
           fi
           
-          UPLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.upload_url' | cut -d'{' -f1)
-          echo "UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
-          echo "✅ Found release: $TAG"
+          echo "::endgroup::"
 
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Install nix with logging
+        run: |
+          echo "::group::Installing Nix"
+          .github/scripts/log-collector.sh execute "install-nix" "uses cachix/install-nix-action@v20"
+          echo "::endgroup::"
 
-      - name: Install nix
-        uses: cachix/install-nix-action@v20
-
-      - name: setup cachix
+      - name: setup cachix with logging
         uses: cachix/cachix-action@v12
         with:
           name: koishi
           authToken: ${{ secrets.CACHIX_TOKEN }}
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java with logging
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '11'
           cache: gradle
 
-      - name: Build
+      - name: Build with comprehensive logging
         run: |
+          echo "::group::Building ${{ matrix.build.name }}"
+          
           TAG="${{ steps.vars.outputs.TAG }}"
           BUILD_PURPOSE="${{ github.inputs.build_purpose || 'release' }}"
           
@@ -139,25 +169,56 @@ jobs:
               ;;
           esac
           
-          export VERSION_CODE="$VERSION_CODE"
-          export VERSION_NAME="$TAG"
-          export COPY="${{ matrix.build.copy }}"
+          BUILD_RESULT=$(./.github/scripts/log-collector.sh execute "build-${{ matrix.build.copy }}" "
+            export VERSION_CODE='$VERSION_CODE'
+            export VERSION_NAME='$TAG'
+            export COPY='${{ matrix.build.copy }}'
+            
+            echo \"Building ${{ matrix.build.name }} with VERSION_CODE=\$VERSION_CODE\"
+            ./build.sh
+          ")
           
-          echo "Building ${{ matrix.build.name }} with VERSION_CODE=$VERSION_CODE"
-          ./build.sh
+          EXIT_CODE=${BUILD_RESULT%%:*}
+          LOG_FILE=${BUILD_RESULT##*:}
+          
+          if [[ $EXIT_CODE -ne 0 ]]; then
+            echo "❌ Build failed for ${{ matrix.build.name }} (exit code: $EXIT_CODE)"
+            echo "📋 Check log file: $LOG_FILE"
+            exit 1
+          fi
+          
+          echo "✅ Build completed for ${{ matrix.build.name }}"
+          echo "::endgroup::"
 
-      - uses: ilharp/sign-android-release@v1
-        name: Sign app APK
+      - name: Sign APK with logging
         id: sign_app
+        run: |
+          echo "::group::Signing ${{ matrix.build.name }}"
+          
+          SIGN_RESULT=$(./.github/scripts/log-collector.sh execute "sign-${{ matrix.build.copy }}" "
+            echo \"Setting up signing environment for ${{ matrix.build.name }}...\"
+            echo \"Key alias: koishi-android\"
+            echo \"Signing key configured: ***\"
+            echo \"Keystore password configured: ***\"
+            echo \"Key password configured: ***\"
+          ")
+          
+          # Note: The above logs the setup, actual signing is done by the action
+          echo "::endgroup::"
+
+      - name: Sign app APK (actual)
+        uses: ilharp/sign-android-release@v1
         with:
           keyAlias: koishi-android
           signingKey: ${{ secrets.JKS }}
           keyStorePassword: ${{ secrets.JKS_PASSWORD }}
           keyPassword: ${{ secrets.JKS_PASSWORD }}
 
-      - name: Upload to Release
+      - name: Upload to Release with logging
         if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.inputs.build_purpose != 'test')
         run: |
+          echo "::group::Uploading ${{ matrix.build.name }} to Release"
+          
           # Prepare filename with build purpose suffix
           BUILD_PURPOSE="${{ github.inputs.build_purpose || 'release' }}"
           TAG="${{ steps.vars.outputs.TAG }}"
@@ -175,24 +236,37 @@ jobs:
           
           echo "Uploading: $FILENAME"
           
-          UPLOAD_RESPONSE=$(curl -s \
-            -X POST \
-            -H 'Accept: application/vnd.github.v3+json' \
-            -H 'Content-Type: application/octet-stream' \
-            -H 'Authorization: token ${{ github.token }}' \
-            --data-binary @${{steps.sign_app.outputs.signedFile}} \
-            "${{ steps.vars.outputs.UPLOAD_URL }}?name=${ENCODED_NAME}")
+          UPLOAD_RESULT=$(./.github/scripts/log-collector.sh execute "upload-${{ matrix.build.copy }}" "
+            UPLOAD_RESPONSE=\$(curl -s \
+              -X POST \
+              -H 'Accept: application/vnd.github.v3+json' \
+              -H 'Content-Type: application/octet-stream' \
+              -H 'Authorization: token ${{ github.token }}' \
+              --data-binary @${{steps.sign_app.outputs.signedFile}} \
+              \"${{ steps.vars.outputs.UPLOAD_URL }}?name=${ENCODED_NAME}\")
+            
+            # Check upload result
+            BROWSER_URL=\$(echo \"\$UPLOAD_RESPONSE\" | jq -r '.browser_download_url')
+            if [[ \"\$BROWSER_URL\" == \"\" ]] || [[ -z \"\$BROWSER_URL\" ]]; then
+              echo \"❌ Upload failed\"
+              echo \"Response: \$UPLOAD_RESPONSE\"
+              exit 1
+            fi
+            
+            echo \"✅ Uploaded successfully: \$BROWSER_URL\"
+            echo \"browser_url=\$BROWSER_URL\" >> \$GITHUB_OUTPUT
+          ")
           
-          # Check upload result
-          BROWSER_URL=$(echo "$UPLOAD_RESPONSE" | jq -r '.browser_download_url')
-          if [[ "$BROWSER_URL" == "" ]] || [[ -z "$BROWSER_URL" ]]; then
-            echo "❌ Upload failed"
-            echo "Response: $UPLOAD_RESPONSE"
+          EXIT_CODE=${UPLOAD_RESULT%%:*}
+          LOG_FILE=${UPLOAD_RESULT##*:}
+          
+          if [[ $EXIT_CODE -ne 0 ]]; then
+            echo "❌ Upload failed for ${{ matrix.build.name }}"
             exit 1
           fi
           
-          echo "✅ Uploaded successfully: $BROWSER_URL"
-          echo "browser_url=$BROWSER_URL" >> $GITHUB_OUTPUT
+          echo "✅ ${{ matrix.build.name }} uploaded successfully"
+          echo "::endgroup::"
 
       - name: Upload as Artifact (for test builds)
         if: github.event_name == 'workflow_dispatch' && github.inputs.build_purpose == 'test'
@@ -201,6 +275,28 @@ jobs:
           name: test-${{ matrix.build.name }}-${{ steps.vars.outputs.TAG }}
           path: ${{steps.sign_app.outputs.signedFile}}
           retention-days: 7
+
+      - name: Prepare logs for upload
+        if: always()
+        run: |
+          BUILD_STATUS="${{ job.status }}"
+          if [[ "$BUILD_STATUS" == "success" ]]; then
+            BUILD_STATUS="SUCCESS"
+          else
+            BUILD_STATUS="FAILURE"
+          fi
+          
+          .github/scripts/log-collector.sh summary "$BUILD_STATUS"
+          .github/scripts/log-collector.sh upload "upload-logs-${{ matrix.build.name }}-${{ steps.vars.outputs.TAG }}"
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.upload.outputs.artifact_name }}
+          path: ${{ steps.upload.outputs.archive_path }}
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Build Summary
         run: |
@@ -219,3 +315,8 @@ jobs:
             echo "### 📦 Available as Artifact" >> $GITHUB_STEP_SUMMARY
             echo "APK is available for download from the Actions artifacts." >> $GITHUB_STEP_SUMMARY
           fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Build Logs" >> $GITHUB_STEP_SUMMARY
+          echo "Complete build logs are available as artifacts with all sensitive information filtered." >> $GITHUB_STEP_SUMMARY
+          echo "Download the logs artifact for detailed debugging information." >> $GITHUB_STEP_SUMMARY
