@@ -1,3 +1,11 @@
+permissions:
+  contents: write
+  releases: write
+
+concurrency:
+  group: release-create
+  cancel-in-progress: false
+
 on: workflow_dispatch
 
 jobs:
@@ -6,14 +14,90 @@ jobs:
     steps:
       - name: Create release
         run: |
+          set -euo pipefail
+          
+          # Get latest release with error handling
           LATEST_RELEASE=$(curl \
+            -sS \
             -H 'Accept: application/vnd.github.v3+json' \
             -H 'Authorization: token ${{ github.token }}' \
             https://api.github.com/repos/${{ github.repository }}/releases/latest)
+          
+          # Check if request was successful
+          if [[ $? -ne 0 ]] || [[ -z "$LATEST_RELEASE" ]]; then
+            echo "Error: Failed to fetch latest release"
+            exit 1
+          fi
+          
+          # Extract and validate tag
           LATEST_TAG=$(echo "$LATEST_RELEASE" | jq -r '.tag_name')
-          TAG=$(echo $LATEST_TAG | awk -F. '{ print $1 "." $2 "." ($3 + 1) }')
-          curl -X POST \
+          if [[ "$LATEST_TAG" == "" ]] || [[ -z "$LATEST_TAG" ]]; then
+            echo "Error: No valid tag found in latest release"
+            exit 1
+          fi
+          
+          echo "Latest tag: $LATEST_TAG"
+          
+          # More robust version increment using semver logic
+          # Handle both "v1.2.3" and "1.2.3" formats
+          CLEAN_TAG=${LATEST_TAG#v}  # Remove 'v' prefix if present
+          
+          # Split version and increment patch
+          IFS='.' read -ra VERSION_PARTS <<< "$CLEAN_TAG"
+          if [[ ${#VERSION_PARTS[@]} -ne 3 ]]; then
+            echo "Error: Tag format should be x.y.z (got $LATEST_TAG)"
+            exit 1
+          fi
+          
+          MAJOR=${VERSION_PARTS[0]}
+          MINOR=${VERSION_PARTS[1]}
+          PATCH=${VERSION_PARTS[2]}
+          
+          # Validate numeric parts
+          if ! [[ "$MAJOR" =~ ^[0-9]+$ ]] || ! [[ "$MINOR" =~ ^[0-9]+$ ]] || ! [[ "$PATCH" =~ ^[0-9]+$ ]]; then
+            echo "Error: Version parts must be numeric (got $LATEST_TAG)"
+            exit 1
+          fi
+          
+          # Increment patch version
+          NEW_PATCH=$((PATCH + 1))
+          NEW_TAG="${LATEST_TAG/v/}"  # Keep original format (with or without 'v')
+          NEW_TAG="${NEW_TAG/$PATCH/$NEW_PATCH}"
+          
+          echo "New tag: $NEW_TAG"
+          
+          # Check if tag already exists
+          if git ls-remote --tags origin "refs/tags/$NEW_TAG" | grep -q "refs/tags/$NEW_TAG"; then
+            echo "Error: Tag $NEW_TAG already exists"
+            exit 1
+          fi
+          
+          # Create release with proper error handling
+          RELEASE_BODY="Release $NEW_TAG
+
+          ## Changes
+          - Automated release from workflow
+          - Built with GitHub Actions
+          
+          ## Downloads
+          - koishi-android-$NEW_TAG.apk (basic version)
+          - koishi-android-with-chromium-$NEW_TAG.apk (full version)
+          "
+          
+          CREATE_RESPONSE=$(curl \
+            -sS \
+            -X POST \
             -H 'Accept: application/vnd.github.v3+json' \
-            -H 'Authorization: token ${{ secrets.WORKFLOW_TOKEN }}' \
+            -H 'Authorization: token ${{ github.token }}' \
             https://api.github.com/repos/${{ github.repository }}/releases \
-            -d "{\"tag_name\":\"$TAG\"}"
+            -d "{\"tag_name\":\"$NEW_TAG\",\"name\":\"Release $NEW_TAG\",\"body\":$(echo "$RELEASE_BODY" | jq -Rs .)}")
+          
+          # Check if release creation was successful
+          RELEASE_URL=$(echo "$CREATE_RESPONSE" | jq -r '.html_url')
+          if [[ "$RELEASE_URL" == "" ]] || [[ -z "$RELEASE_URL" ]]; then
+            echo "Error: Failed to create release"
+            echo "Response: $CREATE_RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ Release created successfully: $RELEASE_URL"
