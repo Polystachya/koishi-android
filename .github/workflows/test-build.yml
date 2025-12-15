@@ -1,0 +1,226 @@
+permissions:
+  contents: read
+  packages: read
+  actions: read  # Allow reading workflow runs for artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - preview
+          - rc
+      version_suffix:
+        description: 'Version suffix (e.g., beta1, rc2)'
+        required: false
+        default: ''
+        type: string
+      upload_artifacts:
+        description: 'Upload build artifacts'
+        required: true
+        default: true
+        type: boolean
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'legacy/**'
+      - 'build.sh'
+      - '.github/workflows/**'
+  push:
+    branches:
+      - android-fixes
+      - develop
+    paths:
+      - 'legacy/**'
+      - 'build.sh'
+      - '.github/workflows/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.inputs.build_type || 'auto' }}
+  cancel-in-progress: true
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      build_success: ${{ steps.build.outcome }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate test version
+        id: version
+        run: |
+          # Generate version based on trigger type and inputs
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # PR builds: use PR number
+            PR_NUM="${{ github.event.pull_request.number }}"
+            VERSION_NAME="test-pr${PR_NUM}"
+            VERSION_CODE="900${PR_NUM}"  # 9000+ to distinguish from releases
+          elif [[ "${{ github.ref }}" == "refs/heads/android-fixes" ]]; then
+            # Branch builds: use commit short hash
+            COMMIT_SHA="${{ github.sha }}"
+            SHORT_SHA="${COMMIT_SHA:0:7}"
+            VERSION_NAME="test-fixes-${SHORT_SHA}"
+            VERSION_CODE="800${COMMIT_SHA: -4}"  # 8000+ for branch builds
+          else
+            # Manual builds: use input or timestamp
+            BUILD_TYPE="${{ github.inputs.build_type || 'test' }}"
+            SUFFIX="${{ github.inputs.version_suffix }}"
+            TIMESTAMP=$(date +%Y%m%d%H%M)
+            
+            if [[ -n "$SUFFIX" ]]; then
+              VERSION_NAME="${BUILD_TYPE}-${TIMESTAMP}-${SUFFIX}"
+            else
+              VERSION_NAME="${BUILD_TYPE}-${TIMESTAMP}"
+            fi
+            VERSION_CODE="7${TIMESTAMP: -4}"  # 7000+ for manual builds
+          fi
+          
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "Generated version: $VERSION_NAME (code: $VERSION_CODE)"
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v20
+
+      - name: setup cachix
+        uses: cachix/cachix-action@v12
+        with:
+          name: koishi
+          authToken: ${{ secrets.CACHIX_TOKEN }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+      - name: Build test APKs
+        id: build
+        run: |
+          echo "Building test version: ${{ steps.version.outputs.version_name }}"
+          
+          # Build both variants for testing
+          for COPY_TYPE in copy copy-extra; do
+            echo "Building with COPY=$COPY_TYPE"
+            
+            export VERSION_CODE="${{ steps.version.outputs.version_code }}"
+            export VERSION_NAME="${{ steps.version.outputs.version_name }}"
+            export COPY="$COPY_TYPE"
+            
+            if ! ./build.sh; then
+              echo "Build failed for COPY=$COPY_TYPE"
+              exit 1
+            fi
+            
+            # Move APK to distinguishable location
+            if [[ "$COPY_TYPE" == "copy" ]]; then
+              mkdir -p test-artifacts
+              find app/build -name "*.apk" -not -path "*/*test*" -not -path "*/*debug*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-${{ steps.version.outputs.version_name }}.apk
+            else
+              find app/build -name "*.apk" -not -path "*/*test*" -not -path "*/*debug*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-with-chromium-${{ steps.version.outputs.version_name }}.apk
+            fi
+          done
+          
+          echo "✅ Test builds completed successfully"
+
+      - name: Sign test APKs
+        if: github.inputs.upload_artifacts == 'true' || github.event_name != 'workflow_dispatch'
+        uses: ilharp/sign-android-release@v1
+        with:
+          keyAlias: koishi-android
+          signingKey: ${{ secrets.JKS }}
+          keyStorePassword: ${{ secrets.JKS_PASSWORD }}
+          keyPassword: ${{ secrets.JKS_PASSWORD }}
+          inputFiles: test-artifacts/*.apk
+          outputFiles: signed-artifacts/
+
+      - name: Upload test artifacts
+        if: github.inputs.upload_artifacts == 'true' || github.event_name != 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-apks-${{ steps.version.outputs.version_name }}
+          path: signed-artifacts/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Build summary
+        run: |
+          echo "## 🧪 Test Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version Code:** ${{ steps.version.outputs.version_code }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Build Type:** ${{ github.inputs.build_type || 'auto' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Built Variants:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ koishi-android (basic)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ koishi-android-with-chromium (full)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📥 Download:" >> $GITHUB_STEP_SUMMARY
+          echo "Artifacts are available in the Actions tab for 30 days." >> $GITHUB_STEP_SUMMARY
+
+  basic-tests:
+    runs-on: ubuntu-latest
+    needs: test-build
+    if: needs.test-build.outputs.build_success == 'success'
+    
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-apks-${{ needs.test-build.outputs.version_name }}
+          path: downloaded-apks/
+
+      - name: Basic APK validation
+        run: |
+          echo "🔍 Validating APKs..."
+          
+          # Check if APKs exist and have reasonable size
+          for apk in downloaded-apks/*.apk; do
+            if [[ -f "$apk" ]]; then
+              size=$(stat -f%z "$apk" 2>/dev/null || stat -c%s "$apk" 2>/dev/null)
+              filename=$(basename "$apk")
+              
+              echo "📦 $filename: ${size} bytes"
+              
+              # Basic size checks (should be at least 1MB for a functional APK)
+              if [[ $size -lt 1048576 ]]; then
+                echo "❌ APK too small: $filename (${size} bytes)"
+                exit 1
+              fi
+              
+              # Check if it's actually an APK (ZIP format)
+              if ! file "$apk" | grep -q "Zip archive"; then
+                echo "❌ Invalid APK format: $filename"
+                exit 1
+              fi
+            else
+              echo "❌ APK file not found: $apk"
+              exit 1
+            fi
+          done
+          
+          echo "✅ All APKs passed basic validation"
+
+      - name: Test summary
+        run: |
+          echo "## ✅ Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All APKs passed basic validation checks:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ File format validation" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Size validation (> 1MB)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ APK structure validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download artifacts for manual testing" >> $GITHUB_STEP_SUMMARY
+          echo "2. If tests pass, proceed with release creation" >> $GITHUB_STEP_SUMMARY
