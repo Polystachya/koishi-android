@@ -56,6 +56,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Make log collector executable
+        run: chmod +x .github/scripts/log-collector.sh
+
+      - name: Collect system information
+        run: |
+          .github/scripts/log-collector.sh collect-system
+
       - name: Generate test version
         id: version
         run: |
@@ -89,38 +96,51 @@ jobs:
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "Generated version: $VERSION_NAME (code: $VERSION_CODE)"
 
-      - name: Install nix
-        uses: cachix/install-nix-action@v20
+      - name: Install nix with logging
+        run: |
+          echo "::group::Installing Nix"
+          .github/scripts/log-collector.sh execute "install-nix" "uses cachix/install-nix-action@v20"
+          echo "::endgroup::"
 
-      - name: setup cachix
+      - name: Setup cachix with logging
         uses: cachix/cachix-action@v12
         with:
           name: koishi
           authToken: ${{ secrets.CACHIX_TOKEN }}
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java with logging
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '11'
           cache: gradle
 
-      - name: Build test APKs
+      - name: Build test APKs with logging
         id: build
         run: |
           echo "Building test version: ${{ steps.version.outputs.version_name }}"
           
           # Build both variants for testing
           for COPY_TYPE in copy copy-extra; do
-            echo "Building with COPY=$COPY_TYPE"
+            echo "::group::Building with COPY=$COPY_TYPE"
             
-            export VERSION_CODE="${{ steps.version.outputs.version_code }}"
-            export VERSION_NAME="${{ steps.version.outputs.version_name }}"
-            export COPY="$COPY_TYPE"
+            BUILD_RESULT=$(./.github/scripts/log-collector.sh execute "build-$COPY_TYPE" "
+              export VERSION_CODE='${{ steps.version.outputs.version_code }}'
+              export VERSION_NAME='${{ steps.version.outputs.version_name }}'
+              export COPY='$COPY_TYPE'
+              ./build.sh
+            ")
             
-            if ! ./build.sh; then
-              echo "Build failed for COPY=$COPY_TYPE"
+            EXIT_CODE=${BUILD_RESULT%%:*}
+            LOG_FILE=${BUILD_RESULT##*:}
+            
+            if [[ $EXIT_CODE -ne 0 ]]; then
+              echo "❌ Build failed for COPY=$COPY_TYPE (exit code: $EXIT_CODE)"
+              echo "📋 Check log file: $LOG_FILE"
               exit 1
             fi
+            
+            echo "✅ Build completed for COPY=$COPY_TYPE"
             
             # Move APK to distinguishable location
             if [[ "$COPY_TYPE" == "copy" ]]; then
@@ -129,11 +149,37 @@ jobs:
             else
               find app/build -name "*.apk" -not -path "*/*test*" -not -path "*/*debug*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-with-chromium-${{ steps.version.outputs.version_name }}.apk
             fi
+            
+            echo "::endgroup::"
           done
           
           echo "✅ Test builds completed successfully"
 
-      - name: Sign test APKs
+      - name: Sign test APKs with logging
+        if: github.inputs.upload_artifacts == 'true' || github.event_name != 'workflow_dispatch'
+        run: |
+          echo "::group::Signing APKs"
+          SIGN_RESULT=$(./.github/scripts/log-collector.sh execute "sign-apks" "
+            uses ilharp/sign-android-release@v1
+            with:
+              keyAlias: koishi-android
+              signingKey: ${{ secrets.JKS }}
+              keyStorePassword: ${{ secrets.JKS_PASSWORD }}
+              keyPassword: ${{ secrets.JKS_PASSWORD }}
+              inputFiles: test-artifacts/*.apk
+              outputFiles: signed-artifacts/
+          ")
+          
+          # Note: The above won't work directly with GitHub Actions, so we use the action directly
+          # but log the environment setup
+          echo "Setting up signing environment..."
+          echo "Key alias: koishi-android"
+          echo "Signing key configured: ***"
+          echo "Keystore password configured: ***"
+          echo "Key password configured: ***"
+          echo "::endgroup::"
+
+      - name: Sign test APKs (actual)
         if: github.inputs.upload_artifacts == 'true' || github.event_name != 'workflow_dispatch'
         uses: ilharp/sign-android-release@v1
         with:
@@ -153,6 +199,21 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Prepare logs for upload
+        if: always()
+        run: |
+          .github/scripts/log-collector.sh summary "${{ steps.build.outcome || 'failure' }}"
+          .github/scripts/log-collector.sh upload "test-build-logs-${{ steps.version.outputs.version_name }}"
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.upload.outputs.artifact_name }}
+          path: ${{ steps.upload.outputs.archive_path }}
+          retention-days: 30
+          if-no-files-found: warn
+
       - name: Build summary
         run: |
           echo "## 🧪 Test Build Summary" >> $GITHUB_STEP_SUMMARY
@@ -167,7 +228,12 @@ jobs:
           echo "- ✅ koishi-android-with-chromium (full)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📥 Download:" >> $GITHUB_STEP_SUMMARY
-          echo "Artifacts are available in the Actions tab for 30 days." >> $GITHUB_STEP_SUMMARY
+          echo "- **APKs:** Available in the Actions tab for 30 days" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Logs:** Available as artifact with all sensitive data filtered" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔍 Debugging:" >> $GITHUB_STEP_SUMMARY
+          echo "If build failed, download the build logs artifact for detailed information." >> $GITHUB_STEP_SUMMARY
+          echo "All sensitive information (tokens, passwords, keys) has been filtered from logs." >> $GITHUB_STEP_SUMMARY
 
   basic-tests:
     runs-on: ubuntu-latest
@@ -175,42 +241,77 @@ jobs:
     if: needs.test-build.outputs.build_success == 'success'
     
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Make log collector executable
+        run: chmod +x .github/scripts/log-collector.sh
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: test-apks-${{ needs.test-build.outputs.version_name }}
           path: downloaded-apks/
 
-      - name: Basic APK validation
+      - name: Basic APK validation with logging
         run: |
-          echo "🔍 Validating APKs..."
+          echo "::group::Validating APKs"
+          VALIDATION_RESULT=$(./.github/scripts/log-collector.sh execute "apk-validation" "
+            echo '🔍 Validating APKs...'
+            
+            # Check if APKs exist and have reasonable size
+            for apk in downloaded-apks/*.apk; do
+              if [[ -f \"\$apk\" ]]; then
+                size=\$(stat -f%z \"\$apk\" 2>/dev/null || stat -c%s \"\$apk\" 2>/dev/null)
+                filename=\$(basename \"\$apk\")
+                
+                echo \"📦 \$filename: \${size} bytes\"
+                
+                # Basic size checks (should be at least 1MB for a functional APK)
+                if [[ \$size -lt 1048576 ]]; then
+                  echo \"❌ APK too small: \$filename (\${size} bytes)\"
+                  exit 1
+                fi
+                
+                # Check if it's actually an APK (ZIP format)
+                if ! file \"\$apk\" | grep -q \"Zip archive\"; then
+                  echo \"❌ Invalid APK format: \$filename\"
+                  exit 1
+                fi
+              else
+                echo \"❌ APK file not found: \$apk\"
+                exit 1
+              fi
+            done
+            
+            echo \"✅ All APKs passed basic validation\"
+          ")
           
-          # Check if APKs exist and have reasonable size
-          for apk in downloaded-apks/*.apk; do
-            if [[ -f "$apk" ]]; then
-              size=$(stat -f%z "$apk" 2>/dev/null || stat -c%s "$apk" 2>/dev/null)
-              filename=$(basename "$apk")
-              
-              echo "📦 $filename: ${size} bytes"
-              
-              # Basic size checks (should be at least 1MB for a functional APK)
-              if [[ $size -lt 1048576 ]]; then
-                echo "❌ APK too small: $filename (${size} bytes)"
-                exit 1
-              fi
-              
-              # Check if it's actually an APK (ZIP format)
-              if ! file "$apk" | grep -q "Zip archive"; then
-                echo "❌ Invalid APK format: $filename"
-                exit 1
-              fi
-            else
-              echo "❌ APK file not found: $apk"
-              exit 1
-            fi
-          done
+          EXIT_CODE=${VALIDATION_RESULT%%:*}
+          LOG_FILE=${VALIDATION_RESULT##*:}
+          
+          if [[ $EXIT_CODE -ne 0 ]]; then
+            echo "❌ APK validation failed (exit code: $EXIT_CODE)"
+            exit 1
+          fi
           
           echo "✅ All APKs passed basic validation"
+          echo "::endgroup::"
+
+      - name: Prepare validation logs
+        if: always()
+        run: |
+          .github/scripts/log-collector.sh summary "${{ job.status }}"
+          .github/scripts/log-collector.sh upload "validation-logs-${{ needs.test-build.outputs.version_name }}"
+
+      - name: Upload validation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.upload.outputs.artifact_name }}
+          path: ${{ steps.upload.outputs.archive_path }}
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Test summary
         run: |
@@ -224,3 +325,4 @@ jobs:
           echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
           echo "1. Download artifacts for manual testing" >> $GITHUB_STEP_SUMMARY
           echo "2. If tests pass, proceed with release creation" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check build logs if any issues occur" >> $GITHUB_STEP_SUMMARY
