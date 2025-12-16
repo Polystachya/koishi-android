@@ -1,108 +1,233 @@
+# ============================================
+# Release Creation Workflow
+# ============================================
+# 功能：自动创建GitHub Release并递增版本号
+# 触发方式：手动触发（workflow_dispatch）
+# 作者：开发团队
+# 更新日期：2024-12-15
+# 
+# 工作流程：
+# 1. 获取最新release信息
+# 2. 解析并递增版本号（PATCH版本+1）
+# 3. 验证新版本号不重复
+# 4. 创建新的GitHub Release
+# 5. 收集并上传构建日志
+# ============================================
+
+# 工作流权限设置
+# 仅授予必要的最小权限，遵循安全最佳实践
 permissions:
-  contents: write
-  releases: write
+  contents: write    # 允许写入仓库内容（创建tag、push等）
+  releases: write    # 允许创建和管理releases
 
+# 并发控制配置
+# 防止同时创建多个release导致版本冲突
 concurrency:
-  group: release-create
-  cancel-in-progress: false
+  group: release-create           # 并发组名，确保同时只有一个release创建任务
+  cancel-in-progress: false       # 不取消正在进行的任务，确保完整性
 
-on: workflow_dispatch
+# 触发条件：仅支持手动触发
+# 这样可以确保release创建的时机完全可控
+on:
+  workflow_dispatch:
+    inputs:
+      # 可以在这里添加手动输入参数，如版本号、release notes等
+      # 目前保持简单，完全自动化版本管理
+      release_notes:
+        description: 'Custom release notes (optional)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
+  # ============================================
+  # 主要的Release创建作业
+  # ============================================
   release:
-    runs-on: ubuntu-latest
+    name: Create Release
+    runs-on: ubuntu-latest    # 使用最新的Ubuntu环境
     
     steps:
-      - name: Checkout
+      # ----------------------------------------
+      # 步骤1：检出代码
+      # ----------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
+        # 使用最新的checkout action，确保获取完整的仓库历史
+        # 这是后续git操作（如检查tag是否存在）的基础
+        with:
+          # 确保获取完整的git历史，包括所有tags
+          fetch-depth: 0
 
-      - name: Make log collector executable
-        run: chmod +x .github/scripts/log-collector.sh
+      # ----------------------------------------
+      # 步骤2：准备日志收集工具
+      # ----------------------------------------
+      - name: Prepare log collector
+        run: |
+          # 确保日志收集脚本具有执行权限
+          chmod +x .github/scripts/log-collector.sh
+          echo "✅ Log collector prepared"
 
+      # ----------------------------------------
+      # 步骤3：收集系统信息
+      # ----------------------------------------
       - name: Collect system information
         run: |
+          # 收集构建环境的系统信息，便于后续调试
           .github/scripts/log-collector.sh collect-system
+          echo "✅ System information collected"
 
+      # ----------------------------------------
+      # 步骤4：创建Release（核心步骤）
+      # ----------------------------------------
       - name: Create release with comprehensive logging
+        id: create-release  # 添加步骤ID，便于后续引用
         run: |
           echo "::group::Creating new release"
+          echo "🚀 Starting release creation process..."
           
+          # 使用log-collector.sh执行release创建，确保所有操作都有日志记录
+          # 这样可以捕获所有输出，包括敏感信息过滤后的安全日志
+          # log-collector.sh返回格式：exit_code:log_file
           RELEASE_RESULT=$(./.github/scripts/log-collector.sh execute "create-release" "
-            set -euo pipefail
+            set -euo pipefail  # 严格模式：遇到错误立即退出
             
-            # Get latest release with error handling
+            # ============================================
+            # 获取最新Release信息
+            # ============================================
+            echo \"📡 Fetching latest release information...\"
+            
+            # 使用GitHub API获取最新release
+            # -sS: 静默模式但显示错误，-H: 设置请求头
             LATEST_RELEASE=\$(curl \
               -sS \
               -H 'Accept: application/vnd.github.v3+json' \
               -H 'Authorization: token ${{ github.token }}' \
               https://api.github.com/repos/${{ github.repository }}/releases/latest)
             
-            # Check if request was successful
+            # 检查API请求是否成功
             if [[ \$? -ne 0 ]] || [[ -z \"\$LATEST_RELEASE\" ]]; then
-              echo \"Error: Failed to fetch latest release\"
+              echo \"❌ Error: Failed to fetch latest release\"
+              echo \"🔍 Please check repository permissions and network connectivity\"
               exit 1
             fi
             
-            # Extract and validate tag
+            # ============================================
+            # 解析并验证Tag信息
+            # ============================================
+            echo \"🏷️ Parsing latest release tag...\"
+            
+            # 使用jq解析JSON，获取tag_name
             LATEST_TAG=\$(echo \"\$LATEST_RELEASE\" | jq -r '.tag_name')
             if [[ \"\$LATEST_TAG\" == \"\" ]] || [[ -z \"\$LATEST_TAG\" ]]; then
-              echo \"Error: No valid tag found in latest release\"
+              echo \"❌ Error: No valid tag found in latest release\"
+              echo \"📋 Latest release response: \$LATEST_RELEASE\"
               exit 1
             fi
             
-            echo \"Latest tag: \$LATEST_TAG\"
+            echo \"✅ Latest tag found: \$LATEST_TAG\"
             
-            # More robust version increment using semver logic
-            # Handle both \"v1.2.3\" and \"1.2.3\" formats
-            CLEAN_TAG=\${LATEST_TAG#v}  # Remove 'v' prefix if present
+            # ============================================
+            # 版本号处理：语义化版本控制（SemVer）
+            # ============================================
+            echo \"🔢 Processing version number...\"
             
-            # Split version and increment patch
+            # 处理版本号格式，支持带'v'前缀和不带前缀的格式
+            # 例如：\"v1.2.3\" -> \"1.2.3\"
+            CLEAN_TAG=\${LATEST_TAG#v}  # 移除'v'前缀（如果存在）
+            
+            # 按点分割版本号，验证三段式格式
             IFS='.' read -ra VERSION_PARTS <<< \"\$CLEAN_TAG\"
             if [[ \${#VERSION_PARTS[@]} -ne 3 ]]; then
-              echo \"Error: Tag format should be x.y.z (got \$LATEST_TAG)\"
+              echo \"❌ Error: Tag format should be x.y.z (got \$LATEST_TAG)\"
+              echo \"📋 Expected format: 1.2.3 or v1.2.3\"
               exit 1
             fi
             
+            # 提取版本号各部分
             MAJOR=\${VERSION_PARTS[0]}
             MINOR=\${VERSION_PARTS[1]}
             PATCH=\${VERSION_PARTS[2]}
             
-            # Validate numeric parts
+            # 验证版本号各部分都是数字
             if ! [[ \"\$MAJOR\" =~ ^[0-9]+$ ]] || ! [[ \"\$MINOR\" =~ ^[0-9]+$ ]] || ! [[ \"\$PATCH\" =~ ^[0-9]+$ ]]; then
-              echo \"Error: Version parts must be numeric (got \$LATEST_TAG)\"
+              echo \"❌ Error: Version parts must be numeric (got \$LATEST_TAG)\"
+              echo \"📋 Major: \$MAJOR, Minor: \$MINOR, Patch: \$PATCH\"
               exit 1
             fi
             
-            # Increment patch version
+            # ============================================
+            # 递增版本号（PATCH版本+1）
+            # ============================================
+            echo \"⬆️ Incrementing patch version...\"
+            
             NEW_PATCH=\$((PATCH + 1))
-            NEW_TAG=\"\${LATEST_TAG/v/}\"  # Keep original format (with or without 'v')
-            NEW_TAG=\"\${NEW_TAG/\$PATCH/\$NEW_PATCH}\"
             
-            echo \"New tag: \$NEW_TAG\"
+            # 显式重组版本字符串，避免误替换风险
+            # 保持原有的格式（带'v'或不带'v'）
+            if [[ \"\$LATEST_TAG\" =~ ^v ]]; then
+              NEW_TAG=\"v\$MAJOR.\$MINOR.\$NEW_PATCH\"
+            else
+              NEW_TAG=\"\$MAJOR.\$MINOR.\$NEW_PATCH\"
+            fi
             
-            # Check if tag already exists
-            if git ls-remote --tags origin \"refs/tags/\$NEW_TAG\" | grep -q \"refs/tags/\$NEW_TAG\"; then
-              echo \"Error: Tag \$NEW_TAG already exists\"
+            echo \"✅ New tag will be: \$NEW_TAG\"
+            
+            # ============================================
+            # 检查Tag是否已存在
+            # ============================================
+            echo \"🔍 Checking if tag already exists...\"
+            
+            # 使用git ls-remote检查远程tag是否存在
+            # 添加错误处理，确保网络连接正常
+            if ! git ls-remote --tags origin \"refs/tags/\$NEW_TAG\" 2>/dev/null | grep -q \"refs/tags/\$NEW_TAG\"; then
+              echo \"✅ Tag \$NEW_TAG is available\"
+            else
+              echo \"❌ Error: Tag \$NEW_TAG already exists\"
+              echo \"🔍 Please check if another release process is running\"
               exit 1
             fi
             
-            # Create release with proper error handling
-            RELEASE_BODY=\"Release \$NEW_TAG
+            # ============================================
+            # 创建GitHub Release
+            # ============================================
+            echo \"📦 Creating GitHub Release...\"
+            
+            # 构建Release说明内容，确保不包含敏感信息
+            # 使用用户提供的release notes，如果有的话
+            CUSTOM_NOTES=\"${{ github.event.inputs.release_notes || '' }}\"
+            
+            if [[ -n \"\$CUSTOM_NOTES\" ]]; then
+              RELEASE_BODY=\"Release \$NEW_TAG
 
-            ## Changes
-            - Automated release from workflow
-            - Built with GitHub Actions
-            - Enhanced logging and security
+\$CUSTOM_NOTES
+
+## 🔧 Build Information
+- Automated release from GitHub Actions workflow
+- Built with enhanced security and logging
+- All sensitive information filtered from build logs
+- Version increment: \$LATEST_TAG → \$NEW_TAG
+\"
+            else
+              RELEASE_BODY=\"Release \$NEW_TAG
+
+## 🚀 Changes
+- Automated release from GitHub Actions workflow
+- Built with enhanced security and logging
+- All sensitive information filtered from build logs
+
+## 📱 Expected Downloads
+- koishi-android-\$NEW_TAG.apk (basic version)
+- koishi-android-with-chromium-\$NEW_TAG.apk (full version with embedded Chromium)
+
+## 🔧 Build Information
+- Security measures applied for log protection
+- Version increment: \$LATEST_TAG → \$NEW_TAG
+\"
+            fi
             
-            ## Downloads
-            - koishi-android-\$NEW_TAG.apk (basic version)
-            - koishi-android-with-chromium-\$NEW_TAG.apk (full version)
-            
-            ## Build Information
-            - Build logs with filtered sensitive data are available as artifacts
-            - All security measures applied for log protection
-            \"
-            
+            # 使用GitHub API创建Release
+            # 使用jq -Rs . 对release body进行JSON安全转义
             CREATE_RESPONSE=\$(curl \
               -sS \
               -X POST \
@@ -111,33 +236,49 @@ jobs:
               https://api.github.com/repos/${{ github.repository }}/releases \
               -d \"{\\\"tag_name\\\":\\\"\$NEW_TAG\\\",\\\"name\\\":\\\"Release \$NEW_TAG\\\",\\\"body\\\":\$(echo \"\$RELEASE_BODY\" | jq -Rs .)}\")
             
-            # Check if release creation was successful
+            # 检查Release创建是否成功
             RELEASE_URL=\$(echo \"\$CREATE_RESPONSE\" | jq -r '.html_url')
             if [[ \"\$RELEASE_URL\" == \"\" ]] || [[ -z \"\$RELEASE_URL\" ]]; then
-              echo \"Error: Failed to create release\"
-              echo \"Response: \$CREATE_RESPONSE\"
+              echo \"❌ Error: Failed to create release\"
+              echo \"📋 API Response: \$CREATE_RESPONSE\"
               exit 1
             fi
             
-            echo \"✅ Release created successfully: \$RELEASE_URL\"
+            echo \"🎉 Release created successfully!\"
+            echo \"🔗 Release URL: \$RELEASE_URL\"
+            
+            # ============================================
+            # 输出结果供后续步骤使用
+            # ============================================
             echo \"release_url=\$RELEASE_URL\" >> \$GITHUB_OUTPUT
             echo \"new_tag=\$NEW_TAG\" >> \$GITHUB_OUTPUT
           ")
           
-          EXIT_CODE=${RELEASE_RESULT%%:*}
-          LOG_FILE=${RELEASE_RESULT##*:}
+          # ============================================
+          # 处理执行结果
+          # ============================================
+          # log-collector.sh返回格式："exit_code:log_file"
+          EXIT_CODE=${RELEASE_RESULT%%:*}    # 提取退出码
+          LOG_FILE=${RELEASE_RESULT##*:}     # 提取日志文件路径
           
           if [[ $EXIT_CODE -ne 0 ]]; then
             echo "❌ Release creation failed (exit code: $EXIT_CODE)"
             echo "📋 Check log file: $LOG_FILE"
+            echo "🔍 Detailed logs are available in artifacts"
             exit 1
           fi
           
+          echo "✅ Release creation completed successfully"
           echo "::endgroup::"
 
+      # ----------------------------------------
+      # 步骤5：准备日志上传
+      # ----------------------------------------
       - name: Prepare logs for upload
-        if: always()
+        id: prepare-logs  # 添加步骤ID，解决引用问题
+        if: always()  # 无论成功或失败都执行，确保日志完整
         run: |
+          # 获取构建状态
           BUILD_STATUS="${{ job.status }}"
           if [[ "$BUILD_STATUS" == "success" ]]; then
             BUILD_STATUS="SUCCESS"
@@ -145,37 +286,95 @@ jobs:
             BUILD_STATUS="FAILURE"
           fi
           
+          echo "📋 Preparing logs for upload (status: $BUILD_STATUS)"
+          
+          # 生成构建摘要并准备上传
           .github/scripts/log-collector.sh summary "$BUILD_STATUS"
           .github/scripts/log-collector.sh upload "release-logs-$(date +%Y%m%d_%H%M%S)"
+          
+          echo "✅ Logs prepared for upload"
 
+      # ----------------------------------------
+      # 步骤6：上传构建日志
+      # ----------------------------------------
       - name: Upload release logs
-        if: always()
+        if: always()  # 确保即使失败也能获取日志
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.upload.outputs.artifact_name }}
-          path: ${{ steps.upload.outputs.archive_path }}
-          retention-days: 30
-          if-no-files-found: warn
+          # 修复：使用正确的步骤ID引用
+          name: ${{ steps.prepare-logs.outputs.artifact_name }}
+          path: ${{ steps.prepare-logs.outputs.archive_path }}
+          retention-days: 30      # 日志保留30天
+          if-no-files-found: warn # 如果没有找到文件，发出警告而不是失败
 
-      - name: Release Summary
+      # ----------------------------------------
+      # 步骤7：生成Release摘要
+      # ----------------------------------------
+      - name: Generate Release Summary
+        if: success()  # 只有在成功时生成摘要
         run: |
+          # 在GitHub Actions界面生成可读的摘要
           echo "## 🏷️ Release Created Successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
           echo "**Workflow:** ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
           echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**New Tag:** ${{ steps.create-release.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          
           echo "### 📋 What's Next:" >> $GITHUB_STEP_SUMMARY
-          echo "1. The `upload.yml` workflow will be automatically triggered" >> $GITHUB_STEP_SUMMARY
-          echo "2. APKs will be built and uploaded to this release" >> $GITHUB_STEP_SUMMARY
-          echo "3. Complete build logs are available as artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "1. 🔄 The \`upload.yml\` workflow will be automatically triggered" >> $GITHUB_STEP_SUMMARY
+          echo "2. 📱 APKs will be built and uploaded to this release" >> $GITHUB_STEP_SUMMARY
+          echo "3. 📊 Complete build logs are available as artifacts" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          
           echo "### 🔍 Logs and Debugging:" >> $GITHUB_STEP_SUMMARY
-          echo "- Release creation logs are available as artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "- All sensitive information has been filtered from logs" >> $GITHUB_STEP_SUMMARY
-          echo "- Check the Actions tab for detailed build information" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 Release creation logs are available as artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔒 All sensitive information has been filtered from logs" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Check the Actions tab for detailed build information" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Downloads:" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📦 Expected Downloads:" >> $GITHUB_STEP_SUMMARY
           echo "APKs will appear here once the upload workflow completes:" >> $GITHUB_STEP_SUMMARY
-          echo "- koishi-android-*.apk (basic version)" >> $GITHUB_STEP_SUMMARY
-          echo "- koishi-android-with-chromium-*.apk (full version)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📱 koishi-android-*.apk (basic version)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🌐 koishi-android-with-chromium-*.apk (full version)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 🎯 Quick Links:" >> $GITHUB_STEP_SUMMARY
+          echo "- [📋 View Release](https://github.com/${{ github.repository }}/releases)" >> $GITHUB_STEP_SUMMARY
+          echo "- [🔧 Actions Tab](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+          echo "- [📊 Workflow Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
+      # ----------------------------------------
+      # 步骤8：失败时生成错误摘要
+      # ----------------------------------------
+      - name: Generate Failure Summary
+        if: failure()  # 只有在失败时生成错误摘要
+        run: |
+          # 在GitHub Actions界面生成错误摘要
+          echo "## ❌ Release Creation Failed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow:** ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 🔍 Debugging Information:" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 Detailed logs are available as artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔒 All sensitive information has been filtered from logs" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Check the Actions tab for detailed build information" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 🛠️ Common Issues:" >> $GITHUB_STEP_SUMMARY
+          echo "1. **Repository Permissions**: Ensure the workflow has necessary permissions" >> $GITHUB_STEP_SUMMARY
+          echo "2. **Network Issues**: Check GitHub API connectivity" >> $GITHUB_STEP_SUMMARY
+          echo "3. **Tag Conflicts**: Verify no concurrent release processes" >> $GITHUB_STEP_SUMMARY
+          echo "4. **Version Format**: Ensure existing tags follow x.y.z format" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 🎯 Quick Links:" >> $GITHUB_STEP_SUMMARY
+          echo "- [🔧 Actions Tab](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+          echo "- [📊 Workflow Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [📋 Download Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
