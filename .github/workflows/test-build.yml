@@ -15,7 +15,7 @@
 #
 # 作者：Koishi Android开发团队
 # 更新日期：2024-12-16
-# 版本：2025-12-17 (修复Nix安装到v31)
+# 版本：2025-12-17 (修复构建路径到legacy目录)
 # ============================================
 
 # 工作流权限配置
@@ -160,7 +160,7 @@ jobs:
           java-version: '11'       # Java 11版本
           cache: gradle            # 启用Gradle缓存
 
-      # 步骤8：构建测试APK
+      # 步骤8：构建测试APK (修复路径到legacy目录)
       - name: Build test APKs with logging
         id: build  # 设置步骤ID用于输出引用
         run: |
@@ -170,12 +170,12 @@ jobs:
           for COPY_TYPE in copy copy-extra; do
             echo "::group::Building with COPY=$COPY_TYPE"
             
-            # 使用日志收集器执行构建
+            # 使用日志收集器执行构建 (修复路径)
             BUILD_RESULT=$(./.github/scripts/log-collector.sh execute "build-$COPY_TYPE" "
               export VERSION_CODE='${{ steps.version.outputs.version_code }}'
               export VERSION_NAME='${{ steps.version.outputs.version_name }}'
               export COPY='$COPY_TYPE'
-              ./build.sh
+              cd legacy && ../build.sh
             ")
             
             # 解析构建结果
@@ -191,12 +191,12 @@ jobs:
             
             echo "✅ Build completed for COPY=$COPY_TYPE"
             
-            # 将APK移动到可区分的位置
+            # 将APK移动到可区分的位置 (修复路径)
             if [[ "$COPY_TYPE" == "copy" ]]; then
               mkdir -p test-artifacts
-              find app/build -name "*.apk" -not -path "*/test/*" -not -path "*/debug/*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-${{ steps.version.outputs.version_name }}.apk
+              find legacy/app/build -name "*.apk" -not -path "*/test/*" -not -path "*/debug/*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-${{ steps.version.outputs.version_name }}.apk
             else
-              find app/build -name "*.apk" -not -path "*/test/*" -not -path "*/debug/*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-with-chromium-${{ steps.version.outputs.version_name }}.apk
+              find legacy/app/build -name "*.apk" -not -path "*/test/*" -not -path "*/debug/*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-with-chromium-${{ steps.version.outputs.version_name }}.apk
             fi
             
             echo "::endgroup::"
