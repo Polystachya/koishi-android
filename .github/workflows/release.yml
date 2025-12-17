@@ -237,21 +237,21 @@ jobs:
               -d \"{\\\"tag_name\\\":\\\"\\$NEW_TAG\\\",\\\"name\\\":\\\"Release \\$NEW_TAG\\\",\\\"body\\\":\\$(echo \"\\$RELEASE_BODY\" | jq -Rs .)}\")
             
             # 检查Release创建是否成功
-            RELEASE_URL=\$(echo \"\\$CREATE_RESPONSE\" | jq -r '.html_url')
-            if [[ \"\\$RELEASE_URL\" == \"\" ]] || [[ -z \"\\$RELEASE_URL\" ]]; then
+            RELEASE_URL=\$(echo \"\$CREATE_RESPONSE\" | jq -r '.html_url')
+            if [[ \"\$RELEASE_URL\" == \"\" ]] || [[ -z \"\$RELEASE_URL\" ]]; then
               echo \"❌ Error: Failed to create release\"
-              echo \"📋 API Response: \\$CREATE_RESPONSE\"
+              echo \"📋 API Response: \$CREATE_RESPONSE\"
               exit 1
             fi
             
             echo \"🎉 Release created successfully!\"
-            echo \"🔗 Release URL: \\$RELEASE_URL\"
+            echo \"🔗 Release URL: \$RELEASE_URL\"
             
             # ============================================
             # 输出结果供后续步骤使用
             # ============================================
-            echo \"release_url=\\$RELEASE_URL\" >> \\$GITHUB_OUTPUT
-            echo \"new_tag=\\$NEW_TAG\" >> \\$GITHUB_OUTPUT
+            echo \"release_url=\$RELEASE_URL\" >> \$GITHUB_OUTPUT
+            echo \"new_tag=\$NEW_TAG\" >> \$GITHUB_OUTPUT
           ")
           
           # ============================================
