@@ -14,7 +14,7 @@
 #
 # 作者：Koishi Android开发团队
 # 更新日期：2024-12-16
-# 版本：2025-12-17 (修复Cachix版本到v16)
+# 版本：2025-12-17 (修复Nix安装到v31)
 # ============================================
 
 # 工作流权限配置
@@ -171,12 +171,11 @@ jobs:
           echo "✅ Release validation successful"
           echo "::endgroup::"
 
-      # 步骤6：安装Nix包管理器 (修复到v16)
+      # 步骤6：安装Nix包管理器 (修复到v31)
       - name: Install nix with logging
-        run: |
-          echo "::group::Installing Nix"
-          .github/scripts/log-collector.sh execute "install-nix" "uses cachix/install-nix-action@v20"
-          echo "::endgroup::"
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
       # 步骤7：设置Cachix缓存 (修复到v16)
       - name: setup cachix with logging
