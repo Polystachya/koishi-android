@@ -21,10 +21,12 @@
             build-tools-30-0-3
             build-tools-33-0-2
             build-tools-34-0-0
+            build-tools-35-0-0  # 新增：Android 15构建工具
             platform-tools
             platforms-android-30
             platforms-android-33
             platforms-android-34
+            platforms-android-35  # 新增：Android 15平台
             emulator
           ]);
         in {
