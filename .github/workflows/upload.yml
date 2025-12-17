@@ -14,7 +14,7 @@
 #
 # 作者：Koishi Android开发团队
 # 更新日期：2024-12-16
-# 版本：2025-12-17 (修复Nix安装到v31)
+# 版本：2025-12-17 (修复构建路径到legacy目录)
 # ============================================
 
 # 工作流权限配置
@@ -192,7 +192,7 @@ jobs:
           java-version: '11'       # Java 11版本
           cache: gradle            # 启用Gradle缓存
 
-      # 步骤9：执行构建
+      # 步骤9：执行构建 (修复路径到legacy目录)
       - name: Build with comprehensive logging
         run: |
           echo "::group::Building ${{ matrix.build.name }}"
@@ -215,14 +215,14 @@ jobs:
               ;;
           esac
           
-          # 使用日志收集器执行构建
+          # 使用日志收集器执行构建 (修复路径)
           BUILD_RESULT=$(./.github/scripts/log-collector.sh execute "build-${{ matrix.build.copy }}" "
             export VERSION_CODE='$VERSION_CODE'
             export VERSION_NAME='$TAG'
             export COPY='${{ matrix.build.copy }}'
             
             echo \"Building ${{ matrix.build.name }} with VERSION_CODE=\$VERSION_CODE\"
-            ./build.sh
+            cd legacy && ../build.sh
           ")
           
           # 解析构建结果 - log-collector.sh返回格式: EXIT_CODE:LOG_FILE
