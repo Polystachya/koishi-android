@@ -88,6 +88,7 @@ jobs:
       version_name: ${{ steps.version.outputs.version_name }}    # 版本名称
       version_code: ${{ steps.version.outputs.version_code }}    # 版本代码
       build_success: ${{ steps.build.outcome }}                  # 构建成功状态
+      build_timestamp: ${{ steps.setup.outputs.build_timestamp }} # 构建时间戳
     
     # 构建步骤序列
     steps:
@@ -95,16 +96,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4  # 使用最新的checkout action
 
-      # 步骤2：设置日志收集器权限
+      # 步骤2：设置构建时间戳
+      - name: Setup build timestamp
+        id: setup  # 为此步骤设置ID，供后续引用
+        run: |
+          # 生成一致的时间戳，整个工作流中使用
+          BUILD_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          echo "build_timestamp=$BUILD_TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
+          echo "📅 Generated build timestamp: $BUILD_TIMESTAMP"
+
+      # 步骤3：设置日志收集器权限
       - name: Make log collector executable
         run: chmod +x .github/scripts/log-collector.sh  # 使日志收集脚本可执行
 
-      # 步骤3：收集系统信息
+      # 步骤4：收集系统信息
       - name: Collect system information
         run: |
+          # 传递时间戳到脚本
+          export BUILD_TIMESTAMP="${{ steps.setup.outputs.build_timestamp }}"
           .github/scripts/log-collector.sh collect-system  # 收集构建环境信息
 
-      # 步骤4：生成测试版本信息
+      # 步骤5：生成测试版本信息
       - name: Generate test version
         id: version  # 为此步骤设置ID，供后续引用
         run: |
@@ -119,7 +132,7 @@ jobs:
             COMMIT_SHA="${{ github.sha }}"
             SHORT_SHA="${COMMIT_SHA:0:7}"
             VERSION_NAME="test-fixes-${SHORT_SHA}"
-            VERSION_CODE="800${COMMIT_SHA: -4}"  # 8000+ 用于分支构建
+            VERSION_CODE="800${COMMIT_SHA: -4}}"  # 8000+ 用于分支构建
           else
             # 手动构建：使用输入参数或时间戳
             BUILD_TYPE="${{ github.inputs.build_type || 'test' }}"
@@ -131,7 +144,7 @@ jobs:
             else
               VERSION_NAME="${BUILD_TYPE}-${TIMESTAMP}"
             fi
-            VERSION_CODE="7${TIMESTAMP: -4}"  # 7000+ 用于手动构建
+            VERSION_CODE="7${TIMESTAMP: -4}}"  # 7000+ 用于手动构建
           fi
           
           # 输出版本信息到GitHub Actions输出
@@ -139,20 +152,20 @@ jobs:
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "Generated version: $VERSION_NAME (code: $VERSION_CODE)"
 
-      # 步骤5：安装Nix包管理器 (修复到v31)
+      # 步骤6：安装Nix包管理器 (修复到v31)
       - name: Install nix with logging
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 步骤6：设置Cachix缓存 (修复到v16)
+      # 步骤7：设置Cachix缓存 (修复到v16)
       - name: Setup cachix with logging
         uses: cachix/cachix-action@v16
         with:
           name: koishi
           authToken: ${{ secrets.CACHIX_TOKEN }}
 
-      # 步骤7：设置Java环境
+      # 步骤8：设置Java环境
       - name: Setup Java with logging
         uses: actions/setup-java@v4
         with:
@@ -160,7 +173,7 @@ jobs:
           java-version: '11'       # Java 11版本
           cache: gradle            # 启用Gradle缓存
 
-      # 步骤8：构建测试APK (修复路径到legacy目录)
+      # 步骤9：构建测试APK (修复路径到legacy目录)
       - name: Build test APKs with logging
         id: build  # 设置步骤ID用于输出引用
         run: |
@@ -170,11 +183,12 @@ jobs:
           for COPY_TYPE in copy copy-extra; do
             echo "::group::Building with COPY=$COPY_TYPE"
             
-            # 使用日志收集器执行构建 (修复路径)
-            BUILD_RESULT=$(./.github/scripts/log-collector.sh execute "build-$COPY_TYPE" "
+            # 使用日志收集器执行构建 (修复路径，传递时间戳)
+            BUILD_RESULT=$(BUILD_TIMESTAMP="${{ steps.setup.outputs.build_timestamp }}" ./.github/scripts/log-collector.sh execute "build-$COPY_TYPE" "
               export VERSION_CODE='${{ steps.version.outputs.version_code }}'
               export VERSION_NAME='${{ steps.version.outputs.version_name }}'
               export COPY='$COPY_TYPE'
+              export BUILD_TIMESTAMP='${{ steps.setup.outputs.build_timestamp }}'
               cd legacy && ../build.sh
             ")
             
@@ -204,12 +218,12 @@ jobs:
           
           echo "✅ Test builds completed successfully"
 
-      # 步骤9：准备APK签名（环境设置）
+      # 步骤10：准备APK签名（环境设置）
       - name: Sign test APKs with logging
         if: github.inputs.upload_artifacts == 'true' || github.event_name != 'workflow_dispatch'
         run: |
           echo "::group::Signing APKs"
-          SIGN_RESULT=$(./.github/scripts/log-collector.sh execute "sign-apks" "
+          SIGN_RESULT=$(BUILD_TIMESTAMP="${{ steps.setup.outputs.build_timestamp }}" ./.github/scripts/log-collector.sh execute "sign-apks" "
             uses ilharp/sign-android-release@v1
             with:
               keyAlias: koishi-android
@@ -229,7 +243,7 @@ jobs:
           echo "Key password configured: ***"
           echo "::endgroup::"
 
-      # 步骤10：实际执行APK签名
+      # 步骤11：实际执行APK签名
       - name: Sign test APKs (actual)
         if: github.inputs.upload_artifacts == 'true' || github.event_name != 'workflow_dispatch'
         id: sign_apks  # 添加步骤ID用于输出引用
@@ -242,7 +256,7 @@ jobs:
           inputFiles: test-artifacts/*.apk
           outputFiles: signed-artifacts/
 
-      # 步骤11：上传测试构建产物
+      # 步骤12：上传测试构建产物
       - name: Upload test artifacts
         if: github.inputs.upload_artifacts == 'true' || github.event_name != 'workflow_dispatch'
         uses: actions/upload-artifact@v4
@@ -252,15 +266,15 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # 步骤12：准备日志上传
+      # 步骤13：准备日志上传
       - name: Prepare logs for upload
         if: always()  # 无论成功失败都执行
         id: prepare_logs  # 添加步骤ID
         run: |
-          .github/scripts/log-collector.sh summary "${{ steps.build.outcome || 'failure' }}"
-          .github/scripts/log-collector.sh upload "test-build-logs-${{ steps.version.outputs.version_name }}"
+          BUILD_TIMESTAMP="${{ steps.setup.outputs.build_timestamp }}" .github/scripts/log-collector.sh summary "${{ steps.build.outcome || 'failure' }}"
+          BUILD_TIMESTAMP="${{ steps.setup.outputs.build_timestamp }}" .github/scripts/log-collector.sh upload "test-build-logs-${{ steps.version.outputs.version_name }}"
 
-      # 步骤13：上传构建日志
+      # 步骤14：上传构建日志
       - name: Upload build logs
         if: always()  # 无论成功失败都执行
         uses: actions/upload-artifact@v4
@@ -270,7 +284,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # 步骤14：生成构建摘要
+      # 步骤15：生成构建摘要
       - name: Build summary
         run: |
           echo "## 🧪 Test Build Summary" >> $GITHUB_STEP_SUMMARY
@@ -318,30 +332,30 @@ jobs:
       - name: Basic APK validation with logging
         run: |
           echo "::group::Validating APKs"
-          VALIDATION_RESULT=$(./.github/scripts/log-collector.sh execute "apk-validation" "
+          VALIDATION_RESULT=$(BUILD_TIMESTAMP="${{ needs.test-build.outputs.build_timestamp }}" ./.github/scripts/log-collector.sh execute "apk-validation" "
             echo '🔍 Validating APKs...'
             
             # 检查APK是否存在且大小合理
             for apk in downloaded-apks/*.apk; do
-              if [[ -f \"\$apk\" ]]; then
-                size=$(stat -f%z \"\$apk\" 2>/dev/null || stat -c%s \"\$apk\" 2>/dev/null)
-                filename=$(basename \"\$apk\")
+              if [[ -f \"$apk\" ]]; then
+                size=$(stat -f%z \"$apk\" 2>/dev/null || stat -c%s \"$apk\" 2>/dev/null)
+                filename=$(basename \"$apk\")
                 
-                echo \"📦 \$filename: \${size} bytes\"
+                echo \"📦 $filename: ${size} bytes\"
                 
                 # 基础大小检查（功能正常的APK至少1MB）
                 if [[ $size -lt 1048576 ]]; then
-                  echo \"❌ APK too small: \$filename (\${size} bytes)\"
+                  echo \"❌ APK too small: $filename (${size} bytes)\"
                   exit 1
                 fi
                 
                 # 检查是否为真正的APK（ZIP格式）
-                if ! file \"\$apk\" | grep -q \"Zip archive\"; then
-                  echo \"❌ Invalid APK format: \$filename\"
+                if ! file \"$apk\" | grep -q \"Zip archive\"; then
+                  echo \"❌ Invalid APK format: $filename\"
                   exit 1
                 fi
               else
-                echo \"❌ APK file not found: \$apk\"
+                echo \"❌ APK file not found: $apk\"
                 exit 1
               fi
             done
@@ -367,8 +381,8 @@ jobs:
         if: always()  # 无论成功失败都执行
         id: prepare_validation_logs  # 添加步骤ID用于输出引用
         run: |
-          .github/scripts/log-collector.sh summary "${{ job.status }}"
-          .github/scripts/log-collector.sh upload "validation-logs-${{ needs.test-build.outputs.version_name }}"
+          BUILD_TIMESTAMP="${{ needs.test-build.outputs.build_timestamp }}" .github/scripts/log-collector.sh summary "${{ job.status }}"
+          BUILD_TIMESTAMP="${{ needs.test-build.outputs.build_timestamp }}" .github/scripts/log-collector.sh upload "validation-logs-${{ needs.test-build.outputs.version_name }}"
 
       # 步骤6：上传验证日志
       - name: Upload validation logs
