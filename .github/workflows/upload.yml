@@ -384,8 +384,8 @@ jobs:
         if: always()  # 无论成功失败都执行
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.prepare_upload_logs.outputs.artifact_name }}  # 修复：引用正确的步骤ID
-          path: ${{ steps.prepare_upload_logs.outputs.archive_path }}    # 修复：引用正确的步骤ID
+          name: upload-logs-${{ matrix.build.name }}-${{ steps.vars.outputs.TAG }}  # 修复：直接使用名称而不是引用不存在的输出
+          path: build-logs-*.tar.gz  # 修复：直接使用通配符
           retention-days: 30
           if-no-files-found: warn
 
