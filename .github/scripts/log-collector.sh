@@ -2,25 +2,45 @@
 
 # Log Collector and Sensitive Data Filter
 # This script collects build logs and filters sensitive information
+# 
+# Version: Enhanced with timestamp consistency fix
+# Original commit: 24d032c07a54d63da2596249f7c037ffdf3d625b
+# Fix: Use BUILD_TIMESTAMP environment variable for consistency
 
 set -euo pipefail
 
 # Configuration
 LOG_DIR="build-logs"
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+
+# 修复：使用环境变量中的时间戳，或者生成新的
+if [[ -n "${BUILD_TIMESTAMP:-}" ]]; then
+    TIMESTAMP="$BUILD_TIMESTAMP"
+else
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+fi
+
 WORKFLOW_RUN_ID="${GITHUB_RUN_ID:-unknown}"
 JOB_NAME="${GITHUB_JOB:-unknown}"
 STEP_NAME="${GITHUB_STEP:-unknown}"
 
-# Create log directory
+# Create log directory with enhanced error handling
 mkdir -p "$LOG_DIR" || {
     echo "❌ Failed to create log directory: $LOG_DIR"
+    echo "Current working directory: $(pwd)"
+    echo "Available space: $(df -h . | tail -1)"
     exit 1
 }
 
-echo "✅ Log directory created: $LOG_DIR"
+# Verify directory was created
+if [[ ! -d "$LOG_DIR" ]]; then
+    echo "❌ Log directory was not created successfully: $LOG_DIR"
+    exit 1
+fi
 
-# Sensitive data patterns to filter
+echo "✅ Log directory created: $LOG_DIR"
+echo "📅 Using timestamp: $TIMESTAMP"
+
+# Sensitive data patterns to filter (enhanced patterns)
 SENSITIVE_PATTERNS=(
     # GitHub tokens
     "ghp_[a-zA-Z0-9]{36}"
@@ -47,7 +67,7 @@ SENSITIVE_PATTERNS=(
     "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
 )
 
-# Replacement patterns
+# Replacement patterns (enhanced replacements)
 REPLACEMENTS=(
     "s/ghp_[a-zA-Z0-9]{36}/ghp_***************/g"
     "s/gho_[a-zA-Z0-9]{36}/gho_***************/g"
@@ -65,30 +85,39 @@ REPLACEMENTS=(
     "s/[a-zA-Z0-9._%+-]\{1,3\}@[a-zA-Z0-9.-]\+\.[a-zA-Z]\{2,\}/***@***.***/"
 )
 
-# Function to filter sensitive data
+# Function to filter sensitive data (enhanced with temp file handling)
 filter_sensitive_data() {
     local input_file="$1"
     local output_file="$2"
     
     echo "🔒 Filtering sensitive data from $input_file..."
     
-    # Apply all replacements
+    # Create a temporary file for processing
+    local temp_file="${output_file}.tmp"
+    
+    # Copy content to temp file if input and output are different files
+    if [[ "$input_file" != "$output_file" ]]; then
+        cp "$input_file" "$temp_file"
+    else
+        # If same file, create temp copy
+        cp "$input_file" "$temp_file"
+    fi
+    
+    # Apply all replacements to temp file
     for replacement in "${REPLACEMENTS[@]}"; do
-        sed -i.bak -E "$replacement" "$input_file"
+        sed -i.bak -E "$replacement" "$temp_file"
     done
     
     # Remove backup files
-    rm -f "$input_file".bak
+    rm -f "$temp_file".bak
     
-    # Copy to output file if different
-    if [[ "$input_file" != "$output_file" ]]; then
-        cp "$input_file" "$output_file"
-    fi
+    # Move temp file to final location
+    mv "$temp_file" "$output_file"
     
     echo "✅ Sensitive data filtered"
 }
 
-# Function to collect system information
+# Function to collect system information (enhanced)
 collect_system_info() {
     local info_file="$LOG_DIR/system-info-$TIMESTAMP.txt"
     
@@ -97,6 +126,7 @@ collect_system_info() {
     {
         echo "=== Build System Information ==="
         echo "Timestamp: $(date)"
+        echo "Build Timestamp: $TIMESTAMP"
         echo "Workflow Run ID: $WORKFLOW_RUN_ID"
         echo "Job Name: $JOB_NAME"
         echo "Step Name: $STEP_NAME"
@@ -154,7 +184,23 @@ collect_system_info() {
     echo "✅ System information collected"
 }
 
-# Function to execute command with logging
+# Function to start log collection for a command (enhanced)
+start_command_log() {
+    local command_name="$1"
+    local log_file="$LOG_DIR/${command_name}-${TIMESTAMP}.log"
+    
+    echo "📝 Starting log collection for: $command_name"
+    echo "=== Command: $command_name ===" > "$log_file"
+    echo "Timestamp: $(date)" >> "$log_file"
+    echo "Build Timestamp: $TIMESTAMP" >> "$log_file"
+    echo "Working Directory: $(pwd)" >> "$log_file"
+    echo "" >> "$log_file"
+    
+    # Return the log file path
+    echo "$log_file"
+}
+
+# Function to execute command with logging (enhanced with better error handling)
 execute_with_logging() {
     local command_name="$1"
     shift
@@ -166,13 +212,28 @@ execute_with_logging() {
     echo "🚀 Executing: $command"
     echo "📝 Logging to: $log_file"
     
-    # Ensure log directory exists
-    mkdir -p "$LOG_DIR"
+    # Ensure log directory exists and is writable
+    if [[ ! -d "$LOG_DIR" ]]; then
+        echo "❌ Log directory does not exist: $LOG_DIR"
+        echo "Creating directory..."
+        mkdir -p "$LOG_DIR" || {
+            echo "❌ Failed to create log directory: $LOG_DIR"
+            exit 1
+        }
+    fi
     
-    # Create log file with header
+    if [[ ! -w "$LOG_DIR" ]]; then
+        echo "❌ Log directory is not writable: $LOG_DIR"
+        echo "Directory permissions: $(ls -ld "$LOG_DIR")"
+        echo "Current user: $(whoami)"
+        exit 1
+    fi
+    
+    # Create log file with enhanced header
     {
         echo "=== Command: $command ==="
         echo "Timestamp: $(date)"
+        echo "Build Timestamp: $TIMESTAMP"
         echo "Working Directory: $(pwd)"
         echo "Environment:"
         env | grep -E -v "(TOKEN|SECRET|KEY|PASSWORD|JKS|CACHIX)" | sort
@@ -202,7 +263,7 @@ execute_with_logging() {
     echo "$exit_code:$filtered_log_file"
 }
 
-# Function to create build summary
+# Function to create build summary (enhanced)
 create_build_summary() {
     local overall_status="$1"
     local summary_file="$LOG_DIR/build-summary-$TIMESTAMP.txt"
@@ -213,6 +274,7 @@ create_build_summary() {
         echo "=== Build Summary ==="
         echo "Overall Status: $overall_status"
         echo "Timestamp: $(date)"
+        echo "Build Timestamp: $TIMESTAMP"
         echo "Workflow Run ID: $WORKFLOW_RUN_ID"
         echo "Job Name: $JOB_NAME"
         echo "Repository: $GITHUB_REPOSITORY"
@@ -246,7 +308,7 @@ create_build_summary() {
     echo "✅ Build summary created"
 }
 
-# Function to upload logs as artifacts
+# Function to upload logs as artifacts (enhanced)
 upload_logs_artifact() {
     local artifact_name="$1"
     
@@ -290,6 +352,9 @@ case "${1:-help}" in
         echo "  filter <input> <output>  Filter sensitive data from file"
         echo "  summary <status>         Create build summary"
         echo "  upload <artifact-name>   Prepare logs for artifact upload"
+        echo ""
+        echo "Environment Variables:"
+        echo "  BUILD_TIMESTAMP          Timestamp for consistent file naming"
         exit 1
         ;;
 esac
