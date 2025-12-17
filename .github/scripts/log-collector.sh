@@ -23,20 +23,20 @@ SENSITIVE_PATTERNS=(
     "ghu_[a-zA-Z0-9]{36}"
     "ghs_[a-zA-Z0-9]{36}"
     "ghr_[a-zA-Z0-9]{36}"
-    "github_token[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]"
+    "github_token[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]"
     
     # JKS keystore data (base64 patterns)
-    "JKS[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9+/=]{100,}['\"]"
-    "keyStorePassword[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]"
-    "keyPassword[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]"
-    "signingKey[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9+/=]{100,}['\"]"
+    "JKS[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9+\/=]{100,}['\"]"
+    "keyStorePassword[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]"
+    "keyPassword[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]"
+    "signingKey[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9+\/=]{100,}['\"]"
     
     # Cachix tokens
-    "CACHIX_TOKEN[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]"
+    "CACHIX_TOKEN[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]"
     
     # Other potential secrets
-    "WORKFLOW_TOKEN[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]"
-    "secret[s]?[[:space:]]*=[[:space:]]*['\"][^'\"]{8,}['\"]"
+    "WORKFLOW_TOKEN[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]"
+    "secret[s]?[[:space:]]*=[[:space:]]*['\"][^\"']{8,}['\"]"
     
     # Email addresses (partial masking)
     "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
@@ -49,14 +49,14 @@ REPLACEMENTS=(
     "s/ghu_[a-zA-Z0-9]{36}/ghu_***************/g"
     "s/ghs_[a-zA-Z0-9]{36}/ghs_***************/g"
     "s/ghr_[a-zA-Z0-9]{36}/ghr_***************/g"
-    "s/github_token[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]/github_token=\"***\"/g"
-    "s/JKS[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9+/=]{100,}['\"]/JKS=\"***BASE64_DATA***\"/g"
-    "s/keyStorePassword[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]/keyStorePassword=\"***\"/g"
-    "s/keyPassword[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]/keyPassword=\"***\"/g"
-    "s/signingKey[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9+/=]{100,}['\"]/signingKey=\"***BASE64_DATA***\"/g"
-    "s/CACHIX_TOKEN[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]/CACHIX_TOKEN=\"***\"/g"
-    "s/WORKFLOW_TOKEN[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]/WORKFLOW_TOKEN=\"***\"/g"
-    "s/secret[s]?[[:space:]]*=[[:space:]]*['\"][^'\"]{8,}['\"]/secret=\"***\"/g"
+    "s/github_token[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]/github_token=\"***\"/g"
+    "s/JKS[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9+\/=]{100,}['\"]/JKS=\"***BASE64_DATA***\"/g"
+    "s/keyStorePassword[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]/keyStorePassword=\"***\"/g"
+    "s/keyPassword[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]/keyPassword=\"***\"/g"
+    "s/signingKey[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9+\/=]{100,}['\"]/signingKey=\"***BASE64_DATA***\"/g"
+    "s/CACHIX_TOKEN[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]/CACHIX_TOKEN=\"***\"/g"
+    "s/WORKFLOW_TOKEN[[:space:]]*=[[:space:]]*['\"][^\"']*['\"]/WORKFLOW_TOKEN=\"***\"/g"
+    "s/secret[s]?[[:space:]]*=[[:space:]]*['\"][^\"']{8,}['\"]/secret=\"***\"/g"
     "s/[a-zA-Z0-9._%+-]\{1,3\}@[a-zA-Z0-9.-]\+\.[a-zA-Z]\{2,\}/***@***.***/"
 )
 
@@ -67,18 +67,27 @@ filter_sensitive_data() {
     
     echo "🔒 Filtering sensitive data from $input_file..."
     
-    # Only copy if input and output are different files
+    # Create a temporary file for processing
+    local temp_file="${output_file}.tmp"
+    
+    # Copy content to temp file if input and output are different files
     if [[ "$input_file" != "$output_file" ]]; then
-        cp "$input_file" "$output_file"
+        cp "$input_file" "$temp_file"
+    else
+        # If same file, create temp copy
+        cp "$input_file" "$temp_file"
     fi
     
-    # Apply all replacements
+    # Apply all replacements to temp file
     for replacement in "${REPLACEMENTS[@]}"; do
-        sed -i.bak -E "$replacement" "$output_file"
+        sed -i.bak -E "$replacement" "$temp_file"
     done
     
     # Remove backup files
-    rm -f "$output_file".bak
+    rm -f "$temp_file".bak
+    
+    # Move temp file to final location
+    mv "$temp_file" "$output_file"
     
     echo "✅ Sensitive data filtered"
 }
