@@ -118,7 +118,7 @@ jobs:
             COMMIT_SHA="${{ github.sha }}"
             SHORT_SHA="${COMMIT_SHA:0:7}"
             VERSION_NAME="test-fixes-${SHORT_SHA}"
-            VERSION_CODE="800${COMMIT_SHA: -4}"  # 8000+ 用于分支构建
+            VERSION_CODE="800${COMMIT_SHA: -4}}"  # 8000+ 用于分支构建
           else
             # 手动构建：使用输入参数或时间戳
             BUILD_TYPE="${{ github.inputs.build_type || 'test' }}"
@@ -130,7 +130,7 @@ jobs:
             else
               VERSION_NAME="${BUILD_TYPE}-${TIMESTAMP}"
             fi
-            VERSION_CODE="7${TIMESTAMP: -4}"  # 7000+ 用于手动构建
+            VERSION_CODE="7${TIMESTAMP: -4}}"  # 7000+ 用于手动构建
           fi
           
           # 输出版本信息到GitHub Actions输出
@@ -194,9 +194,9 @@ jobs:
             # 将APK移动到可区分的位置
             if [[ "$COPY_TYPE" == "copy" ]]; then
               mkdir -p test-artifacts
-              find app/build -name "*.apk" -not -path "*/*test*" -not -path "*/*debug*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-${{ steps.version.outputs.version_name }}.apk
+              find app/build -name "*.apk" -not -path "*/test/*" -not -path "*/debug/*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-${{ steps.version.outputs.version_name }}.apk
             else
-              find app/build -name "*.apk" -not -path "*/*test*" -not -path "*/*debug*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-with-chromium-${{ steps.version.outputs.version_name }}.apk
+              find app/build -name "*.apk" -not -path "*/test/*" -not -path "*/debug/*" | head -1 | xargs -I {} cp {} test-artifacts/koishi-android-with-chromium-${{ steps.version.outputs.version_name }}.apk
             fi
             
             echo "::endgroup::"
@@ -323,25 +323,25 @@ jobs:
             
             # 检查APK是否存在且大小合理
             for apk in downloaded-apks/*.apk; do
-              if [[ -f \"\$apk\" ]]; then
-                size=\$(stat -f%z \"\$apk\" 2>/dev/null || stat -c%s \"\$apk\" 2>/dev/null)
-                filename=\$(basename \"\$apk\")
+              if [[ -f \"$apk\" ]]; then
+                size=$(stat -f%z \"$apk\" 2>/dev/null || stat -c%s \"$apk\" 2>/dev/null)
+                filename=$(basename \"$apk\")
                 
-                echo \"📦 \$filename: \${size} bytes\"
+                echo \"📦 $filename: ${size} bytes\"
                 
                 # 基础大小检查（功能正常的APK至少1MB）
-                if [[ \$size -lt 1048576 ]]; then
-                  echo \"❌ APK too small: \$filename (\${size} bytes)\"
+                if [[ $size -lt 1048576 ]]; then
+                  echo \"❌ APK too small: $filename (${size} bytes)\"
                   exit 1
                 fi
                 
                 # 检查是否为真正的APK（ZIP格式）
-                if ! file \"\$apk\" | grep -q \"Zip archive\"; then
-                  echo \"❌ Invalid APK format: \$filename\"
+                if ! file \"$apk\" | grep -q \"Zip archive\"; then
+                  echo \"❌ Invalid APK format: $filename\"
                   exit 1
                 fi
               else
-                echo \"❌ APK file not found: \$apk\"
+                echo \"❌ APK file not found: $apk\"
                 exit 1
               fi
             done
@@ -365,6 +365,7 @@ jobs:
       # 步骤5：准备验证日志
       - name: Prepare validation logs
         if: always()  # 无论成功失败都执行
+        id: prepare_validation_logs  # 添加步骤ID用于输出引用
         run: |
           .github/scripts/log-collector.sh summary "${{ job.status }}"
           .github/scripts/log-collector.sh upload "validation-logs-${{ needs.test-build.outputs.version_name }}"
@@ -372,11 +373,10 @@ jobs:
       # 步骤6：上传验证日志
       - name: Upload validation logs
         if: always()  # 无论成功失败都执行
-        id: upload_validation_logs  # 添加步骤ID
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.upload_validation_logs.outputs.artifact_name }}  # 修复：引用正确的步骤ID
-          path: ${{ steps.upload_validation_logs.outputs.archive_path }}    # 修复：引用正确的步骤ID
+          name: ${{ steps.prepare_validation_logs.outputs.artifact_name }}  # 修复：引用正确的步骤ID
+          path: ${{ steps.prepare_validation_logs.outputs.archive_path }}    # 修复：引用正确的步骤ID
           retention-days: 30
           if-no-files-found: warn
 
