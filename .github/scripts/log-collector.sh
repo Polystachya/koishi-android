@@ -12,8 +12,21 @@ WORKFLOW_RUN_ID="${GITHUB_RUN_ID:-unknown}"
 JOB_NAME="${GITHUB_JOB:-unknown}"
 STEP_NAME="${GITHUB_STEP:-unknown}"
 
-# Create log directory
-mkdir -p "$LOG_DIR"
+# Create log directory with error handling
+mkdir -p "$LOG_DIR" || {
+    echo "❌ Failed to create log directory: $LOG_DIR"
+    echo "Current working directory: $(pwd)"
+    echo "Available space: $(df -h . | tail -1)"
+    exit 1
+}
+
+# Verify directory was created
+if [[ ! -d "$LOG_DIR" ]]; then
+    echo "❌ Log directory was not created successfully: $LOG_DIR"
+    exit 1
+fi
+
+echo "✅ Log directory created: $LOG_DIR"
 
 # Sensitive data patterns to filter
 SENSITIVE_PATTERNS=(
@@ -183,6 +196,14 @@ execute_with_logging() {
     local filtered_log_file="$LOG_DIR/${command_name}-${TIMESTAMP}-filtered.log"
     
     echo "🚀 Executing: $command"
+    
+    # Ensure log file can be created
+    if [[ ! -w "$LOG_DIR" ]]; then
+        echo "❌ Log directory is not writable: $LOG_DIR"
+        echo "Directory permissions: $(ls -ld "$LOG_DIR")"
+        exit 1
+    fi
+    
     echo "=== Command: $command ===" > "$log_file"
     echo "Timestamp: $(date)" >> "$log_file"
     echo "Working Directory: $(pwd)" >> "$log_file"
