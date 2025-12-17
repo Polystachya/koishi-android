@@ -57,7 +57,7 @@ REPLACEMENTS=(
     "s/CACHIX_TOKEN[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]/CACHIX_TOKEN=\"***\"/g"
     "s/WORKFLOW_TOKEN[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]/WORKFLOW_TOKEN=\"***\"/g"
     "s/secret[s]?[[:space:]]*=[[:space:]]*['\"][^'\"]{8,}['\"]/secret=\"***\"/g"
-    "s/[a-zA-Z0-9._%+-]\{1,3\}@[a-zA-Z0-9.-]\+\.[a-zA-Z]\{2,\}/***@***.***/g"
+    "s/[a-zA-Z0-9._%+-]\{1,3\}@[a-zA-Z0-9.-]\+\.[a-zA-Z]\{2,\}/***@***.***/"
 )
 
 # Function to filter sensitive data
@@ -67,8 +67,10 @@ filter_sensitive_data() {
     
     echo "🔒 Filtering sensitive data from $input_file..."
     
-    # Copy original to output
-    cp "$input_file" "$output_file"
+    # Only copy if input and output are different files
+    if [[ "$input_file" != "$output_file" ]]; then
+        cp "$input_file" "$output_file"
+    fi
     
     # Apply all replacements
     for replacement in "${REPLACEMENTS[@]}"; do
