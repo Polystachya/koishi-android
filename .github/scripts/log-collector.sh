@@ -12,19 +12,11 @@ WORKFLOW_RUN_ID="${GITHUB_RUN_ID:-unknown}"
 JOB_NAME="${GITHUB_JOB:-unknown}"
 STEP_NAME="${GITHUB_STEP:-unknown}"
 
-# Create log directory with error handling
+# Create log directory
 mkdir -p "$LOG_DIR" || {
     echo "❌ Failed to create log directory: $LOG_DIR"
-    echo "Current working directory: $(pwd)"
-    echo "Available space: $(df -h . | tail -1)"
     exit 1
 }
-
-# Verify directory was created
-if [[ ! -d "$LOG_DIR" ]]; then
-    echo "❌ Log directory was not created successfully: $LOG_DIR"
-    exit 1
-fi
 
 echo "✅ Log directory created: $LOG_DIR"
 
@@ -80,27 +72,18 @@ filter_sensitive_data() {
     
     echo "🔒 Filtering sensitive data from $input_file..."
     
-    # Create a temporary file for processing
-    local temp_file="${output_file}.tmp"
-    
-    # Copy content to temp file if input and output are different files
-    if [[ "$input_file" != "$output_file" ]]; then
-        cp "$input_file" "$temp_file"
-    else
-        # If same file, create temp copy
-        cp "$input_file" "$temp_file"
-    fi
-    
-    # Apply all replacements to temp file
+    # Apply all replacements
     for replacement in "${REPLACEMENTS[@]}"; do
-        sed -i.bak -E "$replacement" "$temp_file"
+        sed -i.bak -E "$replacement" "$input_file"
     done
     
     # Remove backup files
-    rm -f "$temp_file".bak
+    rm -f "$input_file".bak
     
-    # Move temp file to final location
-    mv "$temp_file" "$output_file"
+    # Copy to output file if different
+    if [[ "$input_file" != "$output_file" ]]; then
+        cp "$input_file" "$output_file"
+    fi
     
     echo "✅ Sensitive data filtered"
 }
@@ -171,21 +154,6 @@ collect_system_info() {
     echo "✅ System information collected"
 }
 
-# Function to start log collection for a command
-start_command_log() {
-    local command_name="$1"
-    local log_file="$LOG_DIR/${command_name}-${TIMESTAMP}.log"
-    
-    echo "📝 Starting log collection for: $command_name"
-    echo "=== Command: $command_name ===" > "$log_file"
-    echo "Timestamp: $(date)" >> "$log_file"
-    echo "Working Directory: $(pwd)" >> "$log_file"
-    echo "" >> "$log_file"
-    
-    # Return the log file path
-    echo "$log_file"
-}
-
 # Function to execute command with logging
 execute_with_logging() {
     local command_name="$1"
@@ -196,21 +164,21 @@ execute_with_logging() {
     local filtered_log_file="$LOG_DIR/${command_name}-${TIMESTAMP}-filtered.log"
     
     echo "🚀 Executing: $command"
+    echo "📝 Logging to: $log_file"
     
-    # Ensure log file can be created
-    if [[ ! -w "$LOG_DIR" ]]; then
-        echo "❌ Log directory is not writable: $LOG_DIR"
-        echo "Directory permissions: $(ls -ld "$LOG_DIR")"
-        exit 1
-    fi
+    # Ensure log directory exists
+    mkdir -p "$LOG_DIR"
     
-    echo "=== Command: $command ===" > "$log_file"
-    echo "Timestamp: $(date)" >> "$log_file"
-    echo "Working Directory: $(pwd)" >> "$log_file"
-    echo "Environment:" >> "$log_file"
-    env | grep -E -v "(TOKEN|SECRET|KEY|PASSWORD|JKS|CACHIX)" | sort >> "$log_file"
-    echo "" >> "$log_file"
-    echo "=== Output ===" >> "$log_file"
+    # Create log file with header
+    {
+        echo "=== Command: $command ==="
+        echo "Timestamp: $(date)"
+        echo "Working Directory: $(pwd)"
+        echo "Environment:"
+        env | grep -E -v "(TOKEN|SECRET|KEY|PASSWORD|JKS|CACHIX)" | sort
+        echo ""
+        echo "=== Output ==="
+    } > "$log_file"
     
     # Execute command and capture output
     local exit_code=0
@@ -227,7 +195,8 @@ execute_with_logging() {
     echo "End Timestamp: $(date)" >> "$log_file"
     
     # Filter sensitive data
-    filter_sensitive_data "$log_file" "$filtered_log_file"
+    cp "$log_file" "$filtered_log_file"
+    filter_sensitive_data "$filtered_log_file" "$filtered_log_file"
     
     # Return both the exit code and the filtered log file
     echo "$exit_code:$filtered_log_file"
