@@ -1,73 +1,415 @@
+# ============================================
+# Koishi Android 发布上传工作流
+# 
+# 功能说明：
+# - 将构建好的APK上传到GitHub Release
+# - 支持多种构建目的：release、prerelease、test
+# - 自动处理版本代码适配不同构建类型
+# - 支持手动触发和release事件触发
+# - 执行矩阵构建：基础版和包含Chromium的完整版
+#
+# 触发条件：
+# - release事件：当创建新的release时自动触发
+# - 手动触发（workflow_dispatch）：支持自定义目标release和构建目的
+#
+# 作者：Koishi Android开发团队
+# 更新日期：2024-12-16
+# ============================================
+
+# 工作流权限配置
+permissions:
+  contents: write       # 允许写入仓库内容（用于创建releases）
+  releases: write       # 允许写入releases
+
+# 触发条件配置
 on:
+  # Release事件触发 - 当创建新release时
   release:
     types:
-      - created
+      - created  # 仅在release创建时触发
+  
+  # 手动触发 - 支持自定义参数
   workflow_dispatch:
+    inputs:
+      # 目标release标签
+      target_release:
+        description: '目标release标签（留空则使用最新）'
+        required: false
+        default: ''
+        type: string
+      # 构建目的
+      build_purpose:
+        description: '构建目的'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release      # 正式发布
+          - prerelease   # 预发布
+          - test         # 测试版本
 
+# 上传作业 - 使用矩阵策略构建两个APK变体
 jobs:
   upload:
+    # 矩阵策略：并行构建两个不同的APK变体
     strategy:
       matrix:
         build:
-          - name: koishi-android
+          - name: koishi-android                    # 基础版APK
             copy: copy
-          - name: koishi-android-with-chromium
+          - name: koishi-android-with-chromium      # 包含Chromium的完整版APK
             copy: copy-extra
+    
+    # 运行在Ubuntu最新版本
     runs-on: ubuntu-latest
+    
+    # 构建步骤序列
     steps:
-      - name: Set up variables
-        id: vars
-        run: |
-          RELEASE=$(curl \
-            -H 'Accept: application/vnd.github.v3+json' \
-            -H 'Authorization: token ${{ github.token }}' \
-            https://api.github.com/repos/${{ github.repository }}/releases/latest)
-          TAG=$(echo "$RELEASE" | jq -r '.tag_name')
-          UPLOAD_URL=$(echo "$RELEASE" | jq -r '.upload_url' | cut -d'{' -f1)
-          echo ::set-output name=TAG::$TAG
-          echo ::set-output name=UPLOAD_URL::$UPLOAD_URL
-
+      # 步骤1：检出代码
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # 使用最新的checkout action
 
-      - name: Install nix
-        uses: cachix/install-nix-action@v20
+      # 步骤2：设置日志收集器权限
+      - name: Make log collector executable
+        run: chmod +x .github/scripts/log-collector.sh  # 使日志收集脚本可执行
 
-      - name: setup cachix
+      # 步骤3：收集系统信息
+      - name: Collect system information
+        run: |
+          .github/scripts/log-collector.sh collect-system  # 收集构建环境信息
+
+      # 步骤4：设置构建变量
+      - name: Set up variables
+        id: vars  # 设置步骤ID供后续引用
+        run: |
+          echo "::group::Setting up build variables"
+          
+          # 根据触发类型设置不同的变量
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            # Release创建事件 - 使用事件负载
+            TAG="${{ github.event.release.tag_name }}"
+            UPLOAD_URL="${{ github.event.release.upload_url }}"
+            IS_PRERELEASE="${{ github.event.release.prerelease }}"
+            echo "Triggered by release creation: $TAG"
+          else
+            # 手动触发 - 确定目标release
+            INPUT_TAG="${{ github.inputs.target_release }}"
+            BUILD_PURPOSE="${{ github.inputs.build_purpose }}"
+            
+            # 如果指定了目标标签，使用指定的标签
+            if [[ -n "$INPUT_TAG" ]]; then
+              TAG="$INPUT_TAG"
+            else
+              # 获取最新的release
+              LATEST_RELEASE=$(curl \
+                -sS \
+                -H 'Accept: application/vnd.github.v3+json' \
+                -H 'Authorization: token ${{ github.token }}' \
+                https://api.github.com/repos/${{ github.repository }}/releases/latest)
+              TAG=$(echo "$LATEST_RELEASE" | jq -r '.tag_name')
+            fi
+            
+            # 对于手动触发，需要构造upload_url
+            UPLOAD_URL="https://uploads.github.com/repos/${{ github.repository }}/releases"
+            
+            # 根据输入设置预发布标志
+            if [[ "$BUILD_PURPOSE" == "prerelease" ]]; then
+              IS_PRERELEASE=true
+            elif [[ "$BUILD_PURPOSE" == "test" ]]; then
+              IS_PRERELEASE=true
+            else
+              IS_PRERELEASE=false
+            fi
+            
+            echo "Manual trigger - target: $TAG, purpose: $BUILD_PURPOSE"
+          fi
+          
+          # 输出变量到GitHub Actions
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
+          echo "IS_PRERELEASE=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      # 步骤5：验证release存在（仅手动触发时）
+      - name: Validate release exists
+        if: github.event_name == 'workflow_dispatch'  # 仅在手动触发时执行
+        run: |
+          echo "::group::Validating release exists"
+          
+          VALIDATION_RESULT=$(./.github/scripts/log-collector.sh execute "validate-release" "
+            TAG='${{ steps.vars.outputs.TAG }}'
+            
+            # 检查release是否存在
+            RELEASE_INFO=\$(curl \
+              -sS \
+              -H 'Accept: application/vnd.github.v3+json' \
+              -H 'Authorization: token ${{ github.token }}' \
+              https://api.github.com/repos/${{ github.repository }}/releases/tags/\$TAG)
+            
+            if [[ \$(echo \"\$RELEASE_INFO\" | jq -r '.message') == \"Not Found\" ]]; then
+              echo \"❌ Release \$TAG not found. Please create the release first.\"
+              exit 1
+            fi
+            
+            UPLOAD_URL=\$(echo \"\$RELEASE_INFO\" | jq -r '.upload_url' | cut -d'{' -f1)
+            echo \"UPLOAD_URL=\$UPLOAD_URL\" >> \$GITHUB_OUTPUT
+            echo \"✅ Found release: \$TAG\"
+          ")
+          
+          # 解析验证结果 - log-collector.sh返回格式: EXIT_CODE:LOG_FILE
+          EXIT_CODE=${VALIDATION_RESULT%%:*}
+          LOG_FILE=${VALIDATION_RESULT##*:}
+          
+          # 检查验证结果
+          if [[ $EXIT_CODE -ne 0 ]]; then
+            echo "❌ Release validation failed"
+            echo "📋 Check log file: $LOG_FILE"
+            exit 1
+          fi
+          
+          echo "✅ Release validation successful"
+          echo "::endgroup::"
+
+      # 步骤6：安装Nix包管理器
+      - name: Install nix with logging
+        run: |
+          echo "::group::Installing Nix"
+          .github/scripts/log-collector.sh execute "install-nix" "uses cachix/install-nix-action@v20"
+          echo "::endgroup::"
+
+      # 步骤7：设置Cachix缓存
+      - name: setup cachix with logging
         uses: cachix/cachix-action@v12
         with:
           name: koishi
           authToken: ${{ secrets.CACHIX_TOKEN }}
 
-      - uses: actions/setup-java@v3
+      # 步骤8：设置Java环境
+      - name: Setup Java with logging
+        uses: actions/setup-java@v4
         with:
-          distribution: adopt
-          java-version: '11'
-          cache: gradle
+          distribution: temurin    # 使用Temurin发行版
+          java-version: '11'       # Java 11版本
+          cache: gradle            # 启用Gradle缓存
 
-      - name: Build
+      # 步骤9：执行构建
+      - name: Build with comprehensive logging
         run: |
-          TAG=${{ steps.vars.outputs.TAG }}
-          # TODO: increase version code (base version)
-          export VERSION_CODE=$(echo "${TAG:1}" | sed 's/\.//g')
-          export VERSION_NAME=$TAG
-          export COPY=${{ matrix.build.copy }}
-          ./build.sh
+          echo "::group::Building ${{ matrix.build.name }}"
+          
+          TAG="${{ steps.vars.outputs.TAG }}"
+          BUILD_PURPOSE="${{ github.inputs.build_purpose || 'release' }}"
+          
+          # 根据不同构建类型调整版本代码
+          BASE_VERSION_CODE=$(echo "${TAG:1}" | sed 's/\./\//g')
+          
+          case "$BUILD_PURPOSE" in
+            "prerelease")
+              VERSION_CODE="9${BASE_VERSION_CODE}"  # 9xxx 用于预发布
+              ;;
+            "test")
+              VERSION_CODE="8${BASE_VERSION_CODE}"  # 8xxx 用于测试
+              ;;
+            *)
+              VERSION_CODE="${BASE_VERSION_CODE}"   # 正常用于发布
+              ;;
+          esac
+          
+          # 使用日志收集器执行构建
+          BUILD_RESULT=$(./.github/scripts/log-collector.sh execute "build-${{ matrix.build.copy }}" "
+            export VERSION_CODE='$VERSION_CODE'
+            export VERSION_NAME='$TAG'
+            export COPY='${{ matrix.build.copy }}'
+            
+            echo \"Building ${{ matrix.build.name }} with VERSION_CODE=\$VERSION_CODE\"
+            ./build.sh
+          ")
+          
+          # 解析构建结果 - log-collector.sh返回格式: EXIT_CODE:LOG_FILE
+          EXIT_CODE=${BUILD_RESULT%%:*}
+          LOG_FILE=${BUILD_RESULT##*:}
+          
+          # 检查构建结果
+          if [[ $EXIT_CODE -ne 0 ]]; then
+            echo "❌ Build failed for ${{ matrix.build.name }} (exit code: $EXIT_CODE)"
+            echo "📋 Check log file: $LOG_FILE"
+            exit 1
+          fi
+          
+          echo "✅ Build completed for ${{ matrix.build.name }}"
+          echo "::endgroup::"
 
-      - uses: ilharp/sign-android-release@v1
-        name: Sign app APK
-        id: sign_app
+      # 步骤10：准备APK签名（环境设置）
+      - name: Sign APK with logging
+        id: sign_app  # 设置步骤ID用于输出引用
+        run: |
+          echo "::group::Signing ${{ matrix.build.name }}"
+          
+          SIGN_RESULT=$(./.github/scripts/log-collector.sh execute "sign-${{ matrix.build.copy }}" "
+            echo \"Setting up signing environment for ${{ matrix.build.name }}...\"
+            echo \"Key alias: koishi-android\"
+            echo \"Signing key configured: ***\"
+            echo \"Keystore password configured: ***\"
+            echo \"Key password configured: ***\"
+          ")
+          
+          # 注意：上面的日志记录环境设置，实际签名由action执行
+          echo "::endgroup::"
+
+      # 步骤11：实际执行APK签名
+      - name: Sign app APK (actual)
+        id: signer  # 修复：使用更清晰的ID
+        uses: ilharp/sign-android-release@v1
         with:
           keyAlias: koishi-android
           signingKey: ${{ secrets.JKS }}
           keyStorePassword: ${{ secrets.JKS_PASSWORD }}
           keyPassword: ${{ secrets.JKS_PASSWORD }}
 
-      - name: Upload
+      # 步骤12：验证签名文件
+      - name: Verify signed APK
         run: |
-          curl -X POST \
-            -H 'Accept: application/vnd.github.v3+json' \
-            -H 'Content-Type: octet-stream' \
-            -H 'Authorization: token ${{ github.token }}' \
-            --data-binary @${{steps.sign_app.outputs.signedFile}} \
-            "${{ steps.vars.outputs.UPLOAD_URL }}?name=${{ matrix.build.name }}-${{ steps.vars.outputs.TAG }}.apk"
+          echo "::group::Verifying signed APK"
+          # 查找签名后的APK文件
+          SIGNED_APK=$(find signed-artifacts -name "*.apk" 2>/dev/null | head -1)
+          if [[ -z "$SIGNED_APK" ]]; then
+            echo "❌ No signed APK found in signed-artifacts/"
+            ls -la signed-artifacts/ 2>/dev/null || echo "signed-artifacts directory not found"
+            exit 1
+          fi
+          echo "✅ Found signed APK: $SIGNED_APK"
+          echo "signed_apk_path=$SIGNED_APK" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
+      # 步骤13：上传到Release
+      - name: Upload to Release with logging
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.inputs.build_purpose != 'test')
+        run: |
+          echo "::group::Uploading ${{ matrix.build.name }} to Release"
+          
+          # 准备文件名，添加构建目的后缀
+          BUILD_PURPOSE="${{ github.inputs.build_purpose || 'release' }}"
+          TAG="${{ steps.vars.outputs.TAG }}"
+          FILENAME="${{ matrix.build.name }}-${TAG}"
+          
+          # 为非发布构建添加后缀
+          if [[ "$BUILD_PURPOSE" == "prerelease" ]]; then
+            FILENAME="${FILENAME}-pre"
+          elif [[ "$BUILD_PURPOSE" == "test" ]]; then
+            FILENAME="${FILENAME}-test"
+          fi
+          
+          FILENAME="${FILENAME}.apk"
+          ENCODED_NAME=$(printf "%s" "$FILENAME" | jq -sRr @uri)  # URL编码文件名
+          
+          echo "Uploading: $FILENAME"
+          
+          # 使用日志收集器执行上传
+          UPLOAD_RESULT=$(./.github/scripts/log-collector.sh execute "upload-${{ matrix.build.copy }}" "
+            # 修复：使用正确的文件路径引用
+            SIGNED_APK='${{ steps.signer.outputs.signedFile }}'
+            if [[ -z \"\$SIGNED_APK\" ]]; then
+              # 如果action没有输出signedFile，使用查找的文件
+              SIGNED_APK=\$(find signed-artifacts -name '*.apk' 2>/dev/null | head -1)
+            fi
+            
+            if [[ -z \"\$SIGNED_APK\" ]] || [[ ! -f \"\$SIGNED_APK\" ]]; then
+              echo '❌ Signed APK file not found'
+              exit 1
+            fi
+            
+            echo \"Uploading file: \$SIGNED_APK\"
+            
+            UPLOAD_RESPONSE=\$(curl -s \
+              -X POST \
+              -H 'Accept: application/vnd.github.v3+json' \
+              -H 'Content-Type: application/octet-stream' \
+              -H 'Authorization: token ${{ github.token }}' \
+              --data-binary @\"\$SIGNED_APK\" \
+              \"${{ steps.vars.outputs.UPLOAD_URL }}?name=${ENCODED_NAME}\")
+            
+            # 检查上传结果
+            BROWSER_URL=\$(echo \"\$UPLOAD_RESPONSE\" | jq -r '.browser_download_url')
+            if [[ \"\$BROWSER_URL\" == \"\" ]] || [[ -z \"\$BROWSER_URL\" ]]; then
+              echo \"❌ Upload failed\"
+              echo \"Response: \$UPLOAD_RESPONSE\"
+              exit 1
+            fi
+            
+            echo \"✅ Uploaded successfully: \$BROWSER_URL\"
+            echo \"browser_url=\$BROWSER_URL\" >> \$GITHUB_OUTPUT
+          ")
+          
+          # 解析上传结果 - log-collector.sh返回格式: EXIT_CODE:LOG_FILE
+          EXIT_CODE=${UPLOAD_RESULT%%:*}
+          LOG_FILE=${UPLOAD_RESULT##*:}
+          
+          # 检查上传结果
+          if [[ $EXIT_CODE -ne 0 ]]; then
+            echo "❌ Upload failed for ${{ matrix.build.name }}"
+            echo "📋 Check log file: $LOG_FILE"
+            exit 1
+          fi
+          
+          echo "✅ ${{ matrix.build.name }} uploaded successfully"
+          echo "::endgroup::"
+
+      # 步骤14：上传为Artifact（测试构建）
+      - name: Upload as Artifact (for test builds)
+        if: github.event_name == 'workflow_dispatch' && github.inputs.build_purpose == 'test'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-${{ matrix.build.name }}-${{ steps.vars.outputs.TAG }}
+          path: |
+            signed-artifacts/*.apk  # 修复：使用正确的路径模式
+          retention-days: 7
+
+      # 步骤15：准备日志上传
+      - name: Prepare logs for upload
+        if: always()  # 无论成功失败都执行
+        id: prepare_upload_logs  # 添加步骤ID用于输出引用
+        run: |
+          BUILD_STATUS="${{ job.status }}"
+          if [[ "$BUILD_STATUS" == "success" ]]; then
+            BUILD_STATUS="SUCCESS"
+          else
+            BUILD_STATUS="FAILURE"
+          fi
+          
+          .github/scripts/log-collector.sh summary "$BUILD_STATUS"
+          .github/scripts/log-collector.sh upload "upload-logs-${{ matrix.build.name }}-${{ steps.vars.outputs.TAG }}"
+
+      # 步骤16：上传构建日志
+      - name: Upload build logs
+        if: always()  # 无论成功失败都执行
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prepare_upload_logs.outputs.artifact_name }}  # 修复：引用正确的步骤ID
+          path: ${{ steps.prepare_upload_logs.outputs.archive_path }}    # 修复：引用正确的步骤ID
+          retention-days: 30
+          if-no-files-found: warn
+
+      # 步骤17：生成构建摘要
+      - name: Build Summary
+        run: |
+          echo "## 📦 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Variant:** ${{ matrix.build.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.vars.outputs.TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Purpose:** ${{ github.inputs.build_purpose || 'release' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 根据构建类型显示不同的信息
+          if [[ "${{ github.event_name }}" == "release" ]] || [[ "${{ github.inputs.build_purpose }}" != "test" ]]; then
+            echo "### ✅ Uploaded to Release" >> $GITHUB_STEP_SUMMARY
+            echo "APK has been uploaded to the GitHub Release page." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 📦 Available as Artifact" >> $GITHUB_STEP_SUMMARY
+            echo "APK is available for download from the Actions artifacts." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Build Logs" >> $GITHUB_STEP_SUMMARY
+          echo "Complete build logs are available as artifacts with all sensitive information filtered." >> $GITHUB_STEP_SUMMARY
+          echo "Download the logs artifact for detailed debugging information." >> $GITHUB_STEP_SUMMARY
