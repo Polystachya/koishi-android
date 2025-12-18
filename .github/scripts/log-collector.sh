@@ -3,10 +3,11 @@
 # Log Collector and Sensitive Data Filter
 # This script collects build logs and filters sensitive information
 # 
-# Version: Enhanced with timestamp consistency fix
+# Version: Enhanced with timestamp consistency fix and output stream management
 # Original commit: 24d032c07a54d63da2596249f7c037ffdf3d625b
 # Fix: Use BUILD_TIMESTAMP environment variable for consistency
 # Fix: Handle multi-line commands properly
+# Fix: Redirect all status messages to stderr (>&2) to prevent polluting stdout result capture
 
 set -euo pipefail
 
@@ -26,20 +27,20 @@ STEP_NAME="${GITHUB_STEP:-unknown}"
 
 # Create log directory with enhanced error handling
 mkdir -p "$LOG_DIR" || {
-    echo "❌ Failed to create log directory: $LOG_DIR"
-    echo "Current working directory: $(pwd)"
-    echo "Available space: $(df -h . | tail -1)"
+    echo "❌ Failed to create log directory: $LOG_DIR" >&2
+    echo "Current working directory: $(pwd)" >&2
+    echo "Available space: $(df -h . | tail -1)" >&2
     exit 1
 }
 
 # Verify directory was created
 if [[ ! -d "$LOG_DIR" ]]; then
-    echo "❌ Log directory was not created successfully: $LOG_DIR"
+    echo "❌ Log directory was not created successfully: $LOG_DIR" >&2
     exit 1
 fi
 
-echo "✅ Log directory created: $LOG_DIR"
-echo "📅 Using timestamp: $TIMESTAMP"
+echo "✅ Log directory created: $LOG_DIR" >&2
+echo "📅 Using timestamp: $TIMESTAMP" >&2
 
 # Sensitive data patterns to filter (enhanced patterns)
 SENSITIVE_PATTERNS=(
@@ -91,7 +92,7 @@ filter_sensitive_data() {
     local input_file="$1"
     local output_file="$2"
     
-    echo "🔒 Filtering sensitive data from $input_file..."
+    echo "🔒 Filtering sensitive data from $input_file..." >&2
     
     # Create a temporary file for processing
     local temp_file="${output_file}.tmp"
@@ -115,14 +116,14 @@ filter_sensitive_data() {
     # Move temp file to final location
     mv "$temp_file" "$output_file"
     
-    echo "✅ Sensitive data filtered"
+    echo "✅ Sensitive data filtered" >&2
 }
 
 # Function to collect system information (enhanced)
 collect_system_info() {
     local info_file="$LOG_DIR/system-info-$TIMESTAMP.txt"
     
-    echo "📊 Collecting system information..."
+    echo "📊 Collecting system information..." >&2
     
     {
         echo "=== Build System Information ==="
@@ -182,7 +183,7 @@ collect_system_info() {
     # Filter sensitive data from system info
     filter_sensitive_data "$info_file" "$info_file"
     
-    echo "✅ System information collected"
+    echo "✅ System information collected" >&2
 }
 
 # Function to start log collection for a command (enhanced)
@@ -190,7 +191,7 @@ start_command_log() {
     local command_name="$1"
     local log_file="$LOG_DIR/${command_name}-${TIMESTAMP}.log"
     
-    echo "📝 Starting log collection for: $command_name"
+    echo "📝 Starting log collection for: $command_name" >&2
     echo "=== Command: $command_name ===" > "$log_file"
     echo "Timestamp: $(date)" >> "$log_file"
     echo "Build Timestamp: $TIMESTAMP" >> "$log_file"
@@ -201,7 +202,7 @@ start_command_log() {
     echo "$log_file"
 }
 
-# Function to execute command with logging (fixed multi-line command handling)
+# Function to execute command with logging (fixed multi-line command handling and output stream)
 execute_with_logging() {
     local command_name="$1"
     shift
@@ -210,23 +211,23 @@ execute_with_logging() {
     local log_file="$LOG_DIR/${command_name}-${TIMESTAMP}.log"
     local filtered_log_file="$LOG_DIR/${command_name}-${TIMESTAMP}-filtered.log"
     
-    echo "🚀 Executing: $command"
-    echo "📝 Logging to: $log_file"
+    echo "🚀 Executing: $command" >&2
+    echo "📝 Logging to: $log_file" >&2
     
     # Ensure log directory exists and is writable
     if [[ ! -d "$LOG_DIR" ]]; then
-        echo "❌ Log directory does not exist: $LOG_DIR"
-        echo "Creating directory..."
+        echo "❌ Log directory does not exist: $LOG_DIR" >&2
+        echo "Creating directory..." >&2
         mkdir -p "$LOG_DIR" || {
-            echo "❌ Failed to create log directory: $LOG_DIR"
+            echo "❌ Failed to create log directory: $LOG_DIR" >&2
             exit 1
         }
     fi
     
     if [[ ! -w "$LOG_DIR" ]]; then
-        echo "❌ Log directory is not writable: $LOG_DIR"
-        echo "Directory permissions: $(ls -ld "$LOG_DIR")"
-        echo "Current user: $(whoami)"
+        echo "❌ Log directory is not writable: $LOG_DIR" >&2
+        echo "Directory permissions: $(ls -ld "$LOG_DIR")" >&2
+        echo "Current user: $(whoami)" >&2
         exit 1
     fi
     
@@ -244,6 +245,7 @@ execute_with_logging() {
     
     # Execute command and capture output (fixed: use bash -c for multi-line commands)
     local exit_code=0
+    # Note: The command output (stdout and stderr) is redirected to $log_file
     if bash -c "$command" >> "$log_file" 2>&1; then
         exit_code=0
         echo "✅ Command completed successfully" >> "$log_file"
@@ -260,7 +262,7 @@ execute_with_logging() {
     cp "$log_file" "$filtered_log_file"
     filter_sensitive_data "$filtered_log_file" "$filtered_log_file"
     
-    # Return both the exit code and the filtered log file
+    # Return both the exit code and the filtered log file to STDOUT for workflow capture
     echo "$exit_code:$filtered_log_file"
 }
 
@@ -269,7 +271,7 @@ create_build_summary() {
     local overall_status="$1"
     local summary_file="$LOG_DIR/build-summary-$TIMESTAMP.txt"
     
-    echo "📋 Creating build summary..."
+    echo "📋 Creating build summary..." >&2
     
     {
         echo "=== Build Summary ==="
@@ -306,24 +308,25 @@ create_build_summary() {
         
     } > "$summary_file"
     
-    echo "✅ Build summary created"
+    echo "✅ Build summary created" >&2
 }
 
 # Function to upload logs as artifacts (enhanced)
 upload_logs_artifact() {
     local artifact_name="$1"
     
-    echo "📦 Uploading logs as artifact: $artifact_name"
+    echo "📦 Uploading logs as artifact: $artifact_name" >&2
     
     # Create a compressed archive
     local archive_name="build-logs-${TIMESTAMP}.tar.gz"
     tar -czf "$archive_name" -C "$LOG_DIR" .
     
     # Upload the archive (this will be handled by the workflow)
+    # Note: These are GitHub Actions specific outputs, not standard script output
     echo "archive_path=$archive_name" >> $GITHUB_OUTPUT
     echo "artifact_name=$artifact_name" >> $GITHUB_OUTPUT
     
-    echo "✅ Logs archived: $archive_name"
+    echo "✅ Logs archived: $archive_name" >&2
 }
 
 # Main execution based on parameters
@@ -345,17 +348,17 @@ case "${1:-help}" in
         upload_logs_artifact "$2"
         ;;
     "help"|*)
-        echo "Usage: $0 {collect-system|execute|filter|summary|upload} [args...]"
-        echo ""
-        echo "Commands:"
-        echo "  collect-system           Collect system information"
-        echo "  execute <name> <command> Execute command with logging"
-        echo "  filter <input> <output>  Filter sensitive data from file"
-        echo "  summary <status>         Create build summary"
-        echo "  upload <artifact-name>   Prepare logs for artifact upload"
-        echo ""
-        echo "Environment Variables:"
-        echo "  BUILD_TIMESTAMP          Timestamp for consistent file naming"
+        echo "Usage: $0 {collect-system|execute|filter|summary|upload} [args...]" >&2
+        echo "" >&2
+        echo "Commands:" >&2
+        echo "  collect-system           Collect system information" >&2
+        echo "  execute <name> <command> Execute command with logging" >&2
+        echo "  filter <input> <output>  Filter sensitive data from file" >&2
+        echo "  summary <status>         Create build summary" >&2
+        echo "  upload <artifact-name>   Prepare logs for artifact upload" >&2
+        echo "" >&2
+        echo "Environment Variables:" >&2
+        echo "  BUILD_TIMESTAMP          Timestamp for consistent file naming" >&2
         exit 1
         ;;
 esac
