@@ -6,6 +6,7 @@
 # Version: Enhanced with timestamp consistency fix
 # Original commit: 24d032c07a54d63da2596249f7c037ffdf3d625b
 # Fix: Use BUILD_TIMESTAMP environment variable for consistency
+# Fix: Handle multi-line commands properly
 
 set -euo pipefail
 
@@ -200,7 +201,7 @@ start_command_log() {
     echo "$log_file"
 }
 
-# Function to execute command with logging (enhanced with better error handling)
+# Function to execute command with logging (fixed multi-line command handling)
 execute_with_logging() {
     local command_name="$1"
     shift
@@ -241,9 +242,9 @@ execute_with_logging() {
         echo "=== Output ==="
     } > "$log_file"
     
-    # Execute command and capture output
+    # Execute command and capture output (fixed: use bash -c for multi-line commands)
     local exit_code=0
-    if eval "$command" >> "$log_file" 2>&1; then
+    if bash -c "$command" >> "$log_file" 2>&1; then
         exit_code=0
         echo "✅ Command completed successfully" >> "$log_file"
     else
