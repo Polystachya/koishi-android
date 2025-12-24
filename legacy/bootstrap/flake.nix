@@ -20,9 +20,10 @@
                     })
             ];
         };
-        aarch64-pkgs = import nixpkgs {
-            system = "aarch64-linux";
-        };
+        # 清理：移除未使用的 aarch64-pkgs 定义
+        # aarch64-pkgs = import nixpkgs {
+        #     system = "aarch64-linux";
+        # };
     in {
         packages = {
             bootstrap       = pkgs.callPackage ./bootstrap.nix {};
