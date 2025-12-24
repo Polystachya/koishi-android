@@ -17,6 +17,7 @@
 # 更新日期：2024-12-16
 # 版本：2025-12-17 (修复构建路径到legacy目录)
 # 版本：2025-12-24 (修复exit code 126问题 - 使用bash显式执行build.sh)
+# 版本：2025-12-24 (修复VERSION_CODE语法错误 - 移除多余的右花括号)
 # ============================================
 
 # 工作流权限配置
@@ -133,7 +134,7 @@ jobs:
             COMMIT_SHA="${{ github.sha }}"
             SHORT_SHA="${COMMIT_SHA:0:7}"
             VERSION_NAME="test-fixes-${SHORT_SHA}"
-            VERSION_CODE="800${COMMIT_SHA: -4}}"  # 8000+ 用于分支构建
+            VERSION_CODE="800${COMMIT_SHA: -4}"  # 8000+ 用于分支构建
           else
             # 手动构建：使用输入参数或时间戳
             BUILD_TYPE="${{ github.inputs.build_type || 'test' }}"
@@ -145,7 +146,7 @@ jobs:
             else
               VERSION_NAME="${BUILD_TYPE}-${TIMESTAMP}"
             fi
-            VERSION_CODE="7${TIMESTAMP: -4}}"  # 7000+ 用于手动构建
+            VERSION_CODE="7${TIMESTAMP: -4}"  # 7000+ 用于手动构建
           fi
           
           # 输出版本信息到GitHub Actions输出
